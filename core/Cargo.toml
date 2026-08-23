@@ -1,0 +1,11 @@
+[package]
+name = "persistex-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Multisine excitation design for system identification. No dependencies."
+
+# Deliberately empty. The core is meant to transliterate to C or autocode later,
+# so it stays on the standard library and allocates nothing exotic.
+[dependencies]

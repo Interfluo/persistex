@@ -1,0 +1,15 @@
+# Rust build output
+/target/
+/dist/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Python bytecode (docs/make_logo.py)
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
