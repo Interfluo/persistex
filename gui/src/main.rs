@@ -549,7 +549,7 @@ impl App {
         ui.add_space(10.0);
         egui::Frame::new()
             .fill(PANEL)
-            .stroke(egui::Stroke::new(1.0, FRAME))
+            .stroke(egui::Stroke::new(1.0_f32, FRAME))
             .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.set_width(184.0);

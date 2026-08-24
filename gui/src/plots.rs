@@ -247,7 +247,7 @@ impl<'a> Axes<'a> {
             let px = self.px(*x);
             self.painter.line_segment(
                 [Pos2::new(px, self.py(*hi)), Pos2::new(px, self.py(*lo))],
-                Stroke::new(1.5, fill),
+                Stroke::new(1.5_f32, fill),
             );
         }
         let upper: Vec<(f64, f64)> = points.iter().map(|(x, _, hi)| (*x, *hi)).collect();
