@@ -57,7 +57,10 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - name: Install NSIS
-        run: choco install nsis -y --no-progress
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build .exe and installer
         shell: pwsh
         run: ./packaging/windows.ps1

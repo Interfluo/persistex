@@ -21,5 +21,19 @@ if ($env:SIGN_PFX) {
 }
 
 Write-Host "==> building installer"
-& makensis /DVERSION=$Version /DOUTDIR=$Dist (Join-Path $PSScriptRoot "windows-installer.nsi")
+# choco installs NSIS but does not put makensis on PATH for the current session
+$makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+if (-not $makensis) {
+    $makensis = @(
+        "$env:ProgramFiles\NSIS\makensis.exe",
+        "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+        "$env:ChocolateyInstall\bin\makensis.exe"
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+if (-not $makensis) {
+    throw "makensis not found. Install NSIS (choco install nsis) or put it on PATH."
+}
+Write-Host "    using $makensis"
+& $makensis /DVERSION=$Version /DOUTDIR=$Dist (Join-Path $PSScriptRoot "windows-installer.nsi")
+if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
 Write-Host "==> $Dist\persistex-$Version-windows-setup.exe"
