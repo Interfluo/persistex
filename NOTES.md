@@ -29,6 +29,25 @@ Without them the installers work but recipients see Gatekeeper/SmartScreen
 warnings on first run. The scripts pick up credentials from environment
 variables/secrets when present.
 
+CI notes, from getting the first release green (runs 1-4):
+
+- **CI runs on `stable`, which is newer than the local toolchain**, so lints
+  diverge. `float-literal-f32-fallback` (rust#154024) is a warning locally and
+  fatal under `clippy -D warnings`. If a lint failure appears that cannot be
+  reproduced, check the toolchain versions before hunting for anything subtler.
+- The lint step is a hard gate (`cargo fmt --check`, `clippy -D warnings` over
+  all targets). It caught the above on its first run; the earlier
+  `|| echo warning` version would have passed silently.
+- `choco install nsis` does not put `makensis` on PATH for the running session.
+  The Windows script resolves it from the usual install locations.
+- `appimagetool` needs FUSE, which GitHub runners do not have. Use
+  `APPIMAGE_EXTRACT_AND_RUN=1`.
+- The `test` job links the GUI, so it needs the same system libraries as the
+  Linux build job. Keep those two package lists identical.
+- `workflow_dispatch` builds and uploads artifacts but publishes nothing; only a
+  `v*` tag runs the publish job. Use a dispatch run to shake out changes before
+  spending a version number.
+
 egui is pinned to 0.33: 0.35 restructured the API (no `SidePanel`, `App::ui`
 instead of `App::update`) and 0.36 requires rustc 1.95.
 
