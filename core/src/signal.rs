@@ -74,7 +74,10 @@ pub fn refined_extremes(signal: &[f64]) -> (f64, f64) {
             lo_i = i;
         }
     }
-    (signal[hi_i].max(vertex(hi_i)), signal[lo_i].min(vertex(lo_i)))
+    (
+        signal[hi_i].max(vertex(hi_i)),
+        signal[lo_i].min(vertex(lo_i)),
+    )
 }
 
 /// Kahan-compensated sum, matching Python's `math.fsum` closely enough that the

@@ -118,9 +118,15 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
-        let defaults = vec![
-            InputSpec { name: "ail".into(), ..Default::default() },
-            InputSpec { name: "ele".into(), ..Default::default() },
+        let defaults = [
+            InputSpec {
+                name: "ail".into(),
+                ..Default::default()
+            },
+            InputSpec {
+                name: "ele".into(),
+                ..Default::default()
+            },
         ];
         App {
             rows: defaults.iter().map(SpecRow::from_spec).collect(),
@@ -156,8 +162,7 @@ impl App {
         if self.running {
             return;
         }
-        let specs: Result<Vec<InputSpec>, String> =
-            self.rows.iter().map(|r| r.parse()).collect();
+        let specs: Result<Vec<InputSpec>, String> = self.rows.iter().map(|r| r.parse()).collect();
         let specs = match specs {
             Ok(v) => v,
             Err(e) => {
@@ -172,8 +177,7 @@ impl App {
         let (record, repeats, fs) = match (record, repeats, fs) {
             (Ok(a), Ok(b), Ok(c)) => (a, b, c),
             _ => {
-                self.error =
-                    Some("record length, repeats and sample rate must be numbers".into());
+                self.error = Some("record length, repeats and sample rate must be numbers".into());
                 self.metrics.clear();
                 return;
             }
@@ -197,7 +201,9 @@ impl App {
     }
 
     fn refresh(&mut self) {
-        let Some(design) = self.design.as_mut() else { return };
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
         let fs = design.fs;
         let periods = design.n_periods;
         self.timeseries = (0..design.channels.len())
@@ -218,20 +224,48 @@ impl App {
         let available = design.available_bins();
         let per_period = design.samples_per_period();
         let mut info = vec![
-            (format!("f0 = {:.4} Hz  (1 / {:.4} s)", design.f0, design.record_length()), false),
-            (format!("bins {} of {} in {}-{}", used, available, design.bin_range.0, design.bin_range.1), false),
-            (format!("{:.4} s = {} x {:.4} s", design.duration(), design.n_periods, design.record_length()), false),
-            (format!("{} samples at {:.4} Hz", design.n_samples(), design.fs), false),
+            (
+                format!(
+                    "f0 = {:.4} Hz  (1 / {:.4} s)",
+                    design.f0,
+                    design.record_length()
+                ),
+                false,
+            ),
+            (
+                format!(
+                    "bins {} of {} in {}-{}",
+                    used, available, design.bin_range.0, design.bin_range.1
+                ),
+                false,
+            ),
+            (
+                format!(
+                    "{:.4} s = {} x {:.4} s",
+                    design.duration(),
+                    design.n_periods,
+                    design.record_length()
+                ),
+                false,
+            ),
+            (
+                format!("{} samples at {:.4} Hz", design.n_samples(), design.fs),
+                false,
+            ),
         ];
         if (per_period - per_period.round()).abs() > 1e-9 {
             info.push((
-                format!("fs / f0 = {:.3} is not an integer, so repeats will not join seamlessly.", per_period),
+                format!(
+                    "fs / f0 = {:.3} is not an integer, so repeats will not join seamlessly.",
+                    per_period
+                ),
                 true,
             ));
         }
         if used as f64 > available as f64 * 0.9 {
             info.push((
-                "Almost every bin is in use -- no empty bins left to reveal nonlinear distortion.".into(),
+                "Almost every bin is in use -- no empty bins left to reveal nonlinear distortion."
+                    .into(),
                 true,
             ));
         }
@@ -258,13 +292,22 @@ impl App {
         let cancel = self.cancel.clone();
         let (tx, rx) = channel();
         self.rx = Some(rx);
-        let mut sink = Sink { tx: tx.clone(), ctx: ctx.clone() };
+        let mut sink = Sink {
+            tx: tx.clone(),
+            ctx: ctx.clone(),
+        };
 
         std::thread::spawn(move || {
             let targets = only.map(|i| vec![i]);
             let flag = cancel.clone();
             let is_cancelled = move || flag.load(Ordering::Relaxed);
-            optimize_design(&mut work, effort, targets.as_deref(), &is_cancelled, &mut sink);
+            optimize_design(
+                &mut work,
+                effort,
+                targets.as_deref(),
+                &is_cancelled,
+                &mut sink,
+            );
             let phases = work.channels.iter().map(|c| c.phases.clone()).collect();
             let _ = tx.send(Msg::Done(phases));
             sink.ctx.request_repaint();
@@ -303,7 +346,11 @@ impl App {
             }
             self.progress = 1.0;
             self.refresh();
-            let worst = self.metrics.iter().map(|m| m.0).fold(f64::NEG_INFINITY, f64::max);
+            let worst = self
+                .metrics
+                .iter()
+                .map(|m| m.0)
+                .fold(f64::NEG_INFINITY, f64::max);
             self.status = format!(
                 "optimised -- worst RPF {:.4} across {} inputs",
                 worst,
@@ -371,7 +418,12 @@ impl App {
 impl App {
     fn sidebar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("persistex").size(SIZE_TITLE).strong().color(TEXT));
+        ui.label(
+            egui::RichText::new("persistex")
+                .size(SIZE_TITLE)
+                .strong()
+                .color(TEXT),
+        );
         ui.label(
             egui::RichText::new("multisine excitation design")
                 .size(SIZE_SMALL)
@@ -382,20 +434,34 @@ impl App {
         let mut changed = false;
         ui.group(|ui| {
             ui.set_width(200.0);
-            ui.label(egui::RichText::new("Record").size(SIZE_HEAD).strong().color(TEXT));
+            ui.label(
+                egui::RichText::new("Record")
+                    .size(SIZE_HEAD)
+                    .strong()
+                    .color(TEXT),
+            );
             ui.add_space(3.0);
             changed |= field(ui, "Length (s)", &mut self.record);
             changed |= field(ui, "Repeats", &mut self.repeats);
             changed |= field(ui, "Sample rate", &mut self.fs);
             ui.horizontal(|ui| {
-                ui.add_sized([84.0, 18.0], egui::Label::new(
-                    egui::RichText::new("Harmonics").size(SIZE_SMALL).color(TEXT)));
+                ui.add_sized(
+                    [84.0, 18.0],
+                    egui::Label::new(
+                        egui::RichText::new("Harmonics")
+                            .size(SIZE_SMALL)
+                            .color(TEXT),
+                    ),
+                );
                 egui::ComboBox::from_id_salt("binmode")
                     .selected_text(self.bin_mode.label())
                     .width(96.0)
                     .show_ui(ui, |ui| {
                         for m in BinMode::ALL {
-                            if ui.selectable_value(&mut self.bin_mode, m, m.label()).changed() {
+                            if ui
+                                .selectable_value(&mut self.bin_mode, m, m.label())
+                                .changed()
+                            {
                                 changed = true;
                             }
                         }
@@ -406,11 +472,18 @@ impl App {
         ui.add_space(8.0);
         ui.group(|ui| {
             ui.set_width(200.0);
-            ui.label(egui::RichText::new("Optimise").size(SIZE_HEAD).strong().color(TEXT));
+            ui.label(
+                egui::RichText::new("Optimise")
+                    .size(SIZE_HEAD)
+                    .strong()
+                    .color(TEXT),
+            );
             ui.add_space(3.0);
             ui.horizontal(|ui| {
-                ui.add_sized([84.0, 18.0], egui::Label::new(
-                    egui::RichText::new("Effort").size(SIZE_SMALL).color(TEXT)));
+                ui.add_sized(
+                    [84.0, 18.0],
+                    egui::Label::new(egui::RichText::new("Effort").size(SIZE_SMALL).color(TEXT)),
+                );
                 egui::ComboBox::from_id_salt("effort")
                     .selected_text(self.effort.label())
                     .width(96.0)
@@ -423,10 +496,22 @@ impl App {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let can_run = !self.running && self.design.is_some();
-                if ui.add_enabled(can_run, egui::Button::new("Optimise all").min_size(Vec2::new(112.0, 24.0))).clicked() {
+                if ui
+                    .add_enabled(
+                        can_run,
+                        egui::Button::new("Optimise all").min_size(Vec2::new(112.0, 24.0)),
+                    )
+                    .clicked()
+                {
                     self.start_optimize(ctx, None);
                 }
-                if ui.add_enabled(self.running, egui::Button::new("Stop").min_size(Vec2::new(60.0, 24.0))).clicked() {
+                if ui
+                    .add_enabled(
+                        self.running,
+                        egui::Button::new("Stop").min_size(Vec2::new(60.0, 24.0)),
+                    )
+                    .clicked()
+                {
                     self.cancel.store(true, Ordering::Relaxed);
                     self.status = "stopping...".into();
                 }
@@ -438,13 +523,24 @@ impl App {
         ui.add_space(8.0);
         ui.group(|ui| {
             ui.set_width(200.0);
-            ui.label(egui::RichText::new("Export").size(SIZE_HEAD).strong().color(TEXT));
+            ui.label(
+                egui::RichText::new("Export")
+                    .size(SIZE_HEAD)
+                    .strong()
+                    .color(TEXT),
+            );
             ui.add_space(3.0);
             ui.horizontal(|ui| {
-                if ui.add_sized([88.0, 22.0], egui::Button::new("CSV")).clicked() {
+                if ui
+                    .add_sized([88.0, 22.0], egui::Button::new("CSV"))
+                    .clicked()
+                {
                     self.save_csv();
                 }
-                if ui.add_sized([88.0, 22.0], egui::Button::new("JSON")).clicked() {
+                if ui
+                    .add_sized([88.0, 22.0], egui::Button::new("JSON"))
+                    .clicked()
+                {
                     self.save_json();
                 }
             });
@@ -458,11 +554,11 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(184.0);
                 for (line, warn) in &self.info {
-                    ui.label(
-                        egui::RichText::new(line)
-                            .size(SIZE_SMALL)
-                            .color(if *warn { WARN } else { MUTED }),
-                    );
+                    ui.label(egui::RichText::new(line).size(SIZE_SMALL).color(if *warn {
+                        WARN
+                    } else {
+                        MUTED
+                    }));
                     ui.add_space(2.0);
                 }
             });
@@ -473,7 +569,9 @@ impl App {
     }
 
     fn save_csv(&mut self) {
-        let Some(design) = self.design.as_mut() else { return };
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
         if let Some(path) = rfd::FileDialog::new()
             .set_file_name("excitation.csv")
             .add_filter("CSV", &["csv"])
@@ -487,7 +585,9 @@ impl App {
     }
 
     fn save_json(&mut self) {
-        let Some(design) = self.design.as_mut() else { return };
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
         if let Some(path) = rfd::FileDialog::new()
             .set_file_name("excitation.json")
             .add_filter("JSON", &["json"])
@@ -503,7 +603,9 @@ impl App {
 
     fn draw_time(&mut self, painter: &egui::Painter, rect: Rect) {
         painter.rect_filled(rect, 0.0, BG);
-        let Some(design) = self.design.as_ref() else { return };
+        let Some(design) = self.design.as_ref() else {
+            return;
+        };
         let n = design.channels.len();
         if n == 0 || self.timeseries.is_empty() {
             return;
@@ -518,7 +620,13 @@ impl App {
         let channels: Vec<(String, f64, usize)> = design
             .channels
             .iter()
-            .map(|c| (c.name.clone(), c.peak_limit, *c.bins.iter().max().unwrap_or(&1)))
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    c.peak_limit,
+                    *c.bins.iter().max().unwrap_or(&1),
+                )
+            })
             .collect();
 
         for (index, (name, peak_limit, k_max)) in channels.iter().enumerate() {
@@ -561,8 +669,10 @@ impl App {
                         axes.polyline(&mapped, colour, TRACE_WIDTH);
                     }
                     Trace::Band(points) => {
-                        let mapped: Vec<(f64, f64, f64)> =
-                            points.iter().map(|(x, lo, hi)| (x * scale, *lo, *hi)).collect();
+                        let mapped: Vec<(f64, f64, f64)> = points
+                            .iter()
+                            .map(|(x, lo, hi)| (x * scale, *lo, *hi))
+                            .collect();
                         axes.band(&mapped, colour);
                     }
                 }
@@ -576,20 +686,39 @@ impl App {
                 .or_else(|| self.metrics.get(index).map(|m| m.0))
                 .unwrap_or(f64::NAN);
             let mid = (y0 + y1) * 0.5;
-            plots::label(painter, Pos2::new(plot.left() - 14.0, mid - 8.0),
-                         Align2::RIGHT_CENTER, name, SIZE_HEAD, colour);
-            plots::label(painter, Pos2::new(plot.left() - 14.0, mid + 8.0),
-                         Align2::RIGHT_CENTER, &format!("RPF {:.3}", rpf), SIZE_SMALL,
-                         if live { colour } else { MUTED });
+            plots::label(
+                painter,
+                Pos2::new(plot.left() - 14.0, mid - 8.0),
+                Align2::RIGHT_CENTER,
+                name,
+                SIZE_HEAD,
+                colour,
+            );
+            plots::label(
+                painter,
+                Pos2::new(plot.left() - 14.0, mid + 8.0),
+                Align2::RIGHT_CENTER,
+                &format!("RPF {:.3}", rpf),
+                SIZE_SMALL,
+                if live { colour } else { MUTED },
+            );
         }
 
-        plots::label(painter, Pos2::new(rect.center().x, rect.bottom() - 12.0),
-                     Align2::CENTER_CENTER, "time (s)", SIZE_SMALL, MUTED);
+        plots::label(
+            painter,
+            Pos2::new(rect.center().x, rect.bottom() - 12.0),
+            Align2::CENTER_CENTER,
+            "time (s)",
+            SIZE_SMALL,
+            MUTED,
+        );
     }
 
     fn draw_spectrum(&mut self, painter: &egui::Painter, rect: Rect) {
         painter.rect_filled(rect, 0.0, BG);
-        let Some(design) = self.design.as_mut() else { return };
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
         if design.channels.is_empty() {
             return;
         }
@@ -604,7 +733,10 @@ impl App {
             .iter()
             .flat_map(|(_, _, a)| a.iter())
             .fold(0.0f64, |m, v| m.max(*v));
-        let f_lo = series_data.iter().map(|(_, f, _)| f[0]).fold(f64::INFINITY, f64::min);
+        let f_lo = series_data
+            .iter()
+            .map(|(_, f, _)| f[0])
+            .fold(f64::INFINITY, f64::min);
         let f_hi = series_data
             .iter()
             .map(|(_, f, _)| f[f.len() - 1])
@@ -627,17 +759,35 @@ impl App {
             axes.stems(f, a, series(index));
         }
 
-        plots::label(painter, Pos2::new(rect.center().x, rect.bottom() - 14.0),
-                     Align2::CENTER_CENTER, "frequency (Hz)", SIZE_SMALL, MUTED);
-        plots::label(painter, Pos2::new(plot.left(), rect.top() + 6.0),
-                     Align2::LEFT_CENTER, "amplitude", SIZE_SMALL, MUTED);
+        plots::label(
+            painter,
+            Pos2::new(rect.center().x, rect.bottom() - 14.0),
+            Align2::CENTER_CENTER,
+            "frequency (Hz)",
+            SIZE_SMALL,
+            MUTED,
+        );
+        plots::label(
+            painter,
+            Pos2::new(plot.left(), rect.top() + 6.0),
+            Align2::LEFT_CENTER,
+            "amplitude",
+            SIZE_SMALL,
+            MUTED,
+        );
 
         for (index, (name, _, _)) in series_data.iter().enumerate() {
             let y = plot.top() + 12.0 + index as f32 * 16.0;
             let x = plot.right() - 10.0;
             painter.circle_filled(Pos2::new(x - 18.0, y), 3.5, series(index));
-            plots::label(painter, Pos2::new(x - 26.0, y), Align2::RIGHT_CENTER, name,
-                         SIZE_SMALL, TEXT);
+            plots::label(
+                painter,
+                Pos2::new(x - 26.0, y),
+                Align2::RIGHT_CENTER,
+                name,
+                SIZE_SMALL,
+                TEXT,
+            );
         }
     }
 
@@ -652,8 +802,10 @@ impl App {
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.add_sized([84.0, 18.0], egui::Label::new(
-            egui::RichText::new(label).size(SIZE_SMALL).color(TEXT)));
+        ui.add_sized(
+            [84.0, 18.0],
+            egui::Label::new(egui::RichText::new(label).size(SIZE_SMALL).color(TEXT)),
+        );
         changed = ui
             .add_sized([96.0, 20.0], egui::TextEdit::singleline(value))
             .changed();
@@ -699,7 +851,10 @@ mod tests {
         run(&mut app, 3);
         assert!(app.design.is_some(), "no design: {:?}", app.error);
         assert_eq!(app.metrics.len(), 2);
-        assert!(app.metrics.iter().all(|(rpf, _)| rpf.is_finite() && *rpf > 0.0));
+        assert!(app
+            .metrics
+            .iter()
+            .all(|(rpf, _)| rpf.is_finite() && *rpf > 0.0));
         assert!(app.status.contains("2 inputs"));
     }
 
@@ -729,12 +884,21 @@ mod tests {
     fn heterogeneous_rows_render() {
         let mut app = App::default();
         app.rows.push(SpecRow::from_spec(&InputSpec {
-            name: "rud".into(), f_min: 0.5, f_max: 8.0, n_tones: 6,
-            peak_limit: 0.5, shape: Shape::InvF, spacing: Spacing::Logarithmic,
+            name: "rud".into(),
+            f_min: 0.5,
+            f_max: 8.0,
+            n_tones: 6,
+            peak_limit: 0.5,
+            shape: Shape::InvF,
+            spacing: Spacing::Logarithmic,
         }));
         app.rows.push(SpecRow::from_spec(&InputSpec {
-            name: "thr".into(), f_min: 0.05, f_max: 1.0, n_tones: 12,
-            peak_limit: 0.35, ..Default::default()
+            name: "thr".into(),
+            f_min: 0.05,
+            f_max: 1.0,
+            n_tones: 12,
+            peak_limit: 0.35,
+            ..Default::default()
         }));
         app.mark_dirty();
         run(&mut app, 3);

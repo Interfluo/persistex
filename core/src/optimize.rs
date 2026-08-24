@@ -118,7 +118,7 @@ pub fn lp_cost_gradient(
         .iter()
         .zip(amplitudes)
         .zip(phases)
-        .map(|((&k, &a), &phi)| a / peak * Cx::polar(1.0, phi).mul(weights[k].conj()).re)
+        .map(|((&k, &a), &phi)| a / peak * (Cx::polar(1.0, phi) * weights[k].conj()).re)
         .collect();
 
     (cost, gradient)
@@ -158,7 +158,11 @@ where
         let mut alphas = Vec::with_capacity(s_hist.len());
         for idx in (0..s_hist.len()).rev() {
             let a: f64 = rho_hist[idx]
-                * s_hist[idx].iter().zip(&q).map(|(s, qi)| s * qi).sum::<f64>();
+                * s_hist[idx]
+                    .iter()
+                    .zip(&q)
+                    .map(|(s, qi)| s * qi)
+                    .sum::<f64>();
             alphas.push(a);
             for i in 0..n {
                 q[i] -= a * y_hist[idx][i];
@@ -177,7 +181,11 @@ where
         alphas.reverse();
         for idx in 0..s_hist.len() {
             let b: f64 = rho_hist[idx]
-                * y_hist[idx].iter().zip(&q).map(|(y, qi)| y * qi).sum::<f64>();
+                * y_hist[idx]
+                    .iter()
+                    .zip(&q)
+                    .map(|(y, qi)| y * qi)
+                    .sum::<f64>();
             for i in 0..n {
                 q[i] += (alphas[idx] - b) * s_hist[idx][i];
             }
@@ -193,8 +201,7 @@ where
         let mut step = 1.0f64;
         let mut accepted = None;
         for _ in 0..30 {
-            let trial: Vec<f64> =
-                (0..n).map(|i| x[i] + step * direction[i]).collect();
+            let trial: Vec<f64> = (0..n).map(|i| x[i] + step * direction[i]).collect();
             let (f_trial, g_trial) = cost_gradient(&trial);
             if f_trial <= f + 1e-4 * step * slope {
                 accepted = Some((trial, f_trial, g_trial));
@@ -267,6 +274,7 @@ where
 }
 
 /// Van der Ouderaa swapping: clip in time, restore the design amplitude spectrum.
+#[allow(clippy::too_many_arguments)]
 pub fn optimize_swap<C, N>(
     bins: &[usize],
     amplitudes: &[f64],
@@ -383,7 +391,11 @@ pub fn optimize_design<P: Progress>(
             starts.push(schroeder);
         }
         while starts.len() < n_starts {
-            starts.push((0..bins.len()).map(|_| rng.uniform(0.0, 2.0 * PI)).collect());
+            starts.push(
+                (0..bins.len())
+                    .map(|_| rng.uniform(0.0, 2.0 * PI))
+                    .collect(),
+            );
         }
 
         let mut best_phases = current;
@@ -411,9 +423,24 @@ pub fn optimize_design<P: Progress>(
                 };
 
                 let swapped = optimize_swap(
-                    &bins, &amplitudes, &phases, grid, n_swap, 0.9, &cancel, &mut notify,
+                    &bins,
+                    &amplitudes,
+                    &phases,
+                    grid,
+                    n_swap,
+                    0.9,
+                    &cancel,
+                    &mut notify,
                 );
-                optimize_lp(&bins, &amplitudes, &swapped, grid, p_max, &cancel, &mut notify)
+                optimize_lp(
+                    &bins,
+                    &amplitudes,
+                    &swapped,
+                    grid,
+                    p_max,
+                    &cancel,
+                    &mut notify,
+                )
             };
 
             // Score on the measurement grid, not the optimiser's coarse one -- the
@@ -431,7 +458,11 @@ pub fn optimize_design<P: Progress>(
         }
 
         design.channels[index].set_phases(best_phases);
-        reports.push(OptimizeReport { name, before, after: best_rpf });
+        reports.push(OptimizeReport {
+            name,
+            before,
+            after: best_rpf,
+        });
     }
 
     sink.progress(1.0, "done");

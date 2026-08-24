@@ -168,7 +168,15 @@ impl Channel {
         f0: f64,
         peak_limit: f64,
     ) -> Self {
-        Channel { name, bins, amplitudes, phases, f0, peak_limit, cache: None }
+        Channel {
+            name,
+            bins,
+            amplitudes,
+            phases,
+            f0,
+            peak_limit,
+            cache: None,
+        }
     }
 
     pub fn n_tones(&self) -> usize {
@@ -205,7 +213,12 @@ impl Channel {
             None => true,
         };
         if stale {
-            let waveform = synthesize(&self.bins, &self.amplitudes, &self.phases, self.measure_grid());
+            let waveform = synthesize(
+                &self.bins,
+                &self.amplitudes,
+                &self.phases,
+                self.measure_grid(),
+            );
             let (high, low) = refined_extremes(&waveform);
             let rpf = relative_peak_factor(&waveform);
             self.cache = Some(Measured {
@@ -286,7 +299,9 @@ impl Design {
     /// Bins available inside the union of the requested bands.
     pub fn available_bins(&self) -> usize {
         let (lo, hi) = self.bin_range;
-        (lo..=hi).filter(|k| !self.bin_mode.is_odd() || k % 2 == 1).count()
+        (lo..=hi)
+            .filter(|k| !self.bin_mode.is_odd() || k % 2 == 1)
+            .count()
     }
 
     pub fn used_bins(&self) -> usize {
@@ -384,8 +399,11 @@ fn allocate_one(
     for &i in order {
         let spec = &specs[i];
         let (k_lo, k_hi) = ranges[i];
-        let free: HashSet<usize> =
-            pools[i].iter().copied().filter(|k| !used.contains(k)).collect();
+        let free: HashSet<usize> = pools[i]
+            .iter()
+            .copied()
+            .filter(|k| !used.contains(k))
+            .collect();
 
         if free.len() >= spec.n_tones && spec.spacing != Spacing::Logarithmic {
             if let Some(run) = arithmetic_run(&free, k_lo, k_hi, spec.n_tones, odd_only) {
@@ -404,7 +422,11 @@ fn allocate_one(
                 free.len(),
                 spec.f_min,
                 spec.f_max,
-                if odd_only { " (odd harmonics only)" } else { "" }
+                if odd_only {
+                    " (odd harmonics only)"
+                } else {
+                    ""
+                }
             ));
         }
 
@@ -435,11 +457,10 @@ fn allocate_one(
 /// Assign each input a set of bins, mutually exclusive across inputs. Exclusivity is
 /// what keeps the inputs orthogonal over the record, so it holds even when the
 /// requested bands overlap.
-fn allocate_bins(
-    specs: &[InputSpec],
-    f0: f64,
-    odd_only: bool,
-) -> Result<(Vec<Vec<usize>>, Vec<(usize, usize)>), DesignError> {
+/// Bins assigned to each input, plus each input's (k_lo, k_hi) band in bin units.
+type Allocation = (Vec<Vec<usize>>, Vec<(usize, usize)>);
+
+fn allocate_bins(specs: &[InputSpec], f0: f64, odd_only: bool) -> Result<Allocation, DesignError> {
     let mut ranges = Vec::with_capacity(specs.len());
     let mut pools = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -457,7 +478,9 @@ fn allocate_bins(
         }
         ranges.push((k_lo, k_hi));
         pools.push(
-            (k_lo..=k_hi).filter(|k| !odd_only || k % 2 == 1).collect::<Vec<usize>>(),
+            (k_lo..=k_hi)
+                .filter(|k| !odd_only || k % 2 == 1)
+                .collect::<Vec<usize>>(),
         );
     }
 
@@ -516,7 +539,9 @@ pub fn build_design(
         return Err(design_err!("add at least one input"));
     }
     if record_length <= 0.0 || fs <= 0.0 {
-        return Err(design_err!("record length and sample rate must be positive"));
+        return Err(design_err!(
+            "record length and sample rate must be positive"
+        ));
     }
     if n_periods < 1 {
         return Err(design_err!("repeats must be at least one"));
@@ -539,8 +564,10 @@ pub fn build_design(
     let mut channels = Vec::with_capacity(specs.len());
     for (spec, bins) in specs.iter().zip(allocated) {
         let exponent = spec.shape.exponent();
-        let mut amplitudes: Vec<f64> =
-            bins.iter().map(|&k| (k as f64 * f0).powf(-exponent)).collect();
+        let mut amplitudes: Vec<f64> = bins
+            .iter()
+            .map(|&k| (k as f64 * f0).powf(-exponent))
+            .collect();
         let norm = amplitudes.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         if norm > 0.0 {
             for a in amplitudes.iter_mut() {

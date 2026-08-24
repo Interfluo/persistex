@@ -20,40 +20,70 @@ impl Cx {
 
     /// exp(i*theta), scaled by `r`.
     pub fn polar(r: f64, theta: f64) -> Self {
-        Cx { re: r * theta.cos(), im: r * theta.sin() }
+        Cx {
+            re: r * theta.cos(),
+            im: r * theta.sin(),
+        }
     }
 
     pub fn conj(self) -> Self {
-        Cx { re: self.re, im: -self.im }
+        Cx {
+            re: self.re,
+            im: -self.im,
+        }
     }
 
     pub fn arg(self) -> f64 {
         self.im.atan2(self.re)
     }
+}
 
-    pub fn add(self, o: Cx) -> Self {
-        Cx { re: self.re + o.re, im: self.im + o.im }
+impl std::ops::Add for Cx {
+    type Output = Cx;
+    fn add(self, o: Cx) -> Cx {
+        Cx {
+            re: self.re + o.re,
+            im: self.im + o.im,
+        }
     }
+}
 
-    pub fn sub(self, o: Cx) -> Self {
-        Cx { re: self.re - o.re, im: self.im - o.im }
+impl std::ops::Sub for Cx {
+    type Output = Cx;
+    fn sub(self, o: Cx) -> Cx {
+        Cx {
+            re: self.re - o.re,
+            im: self.im - o.im,
+        }
     }
+}
 
-    pub fn mul(self, o: Cx) -> Self {
+impl std::ops::Mul for Cx {
+    type Output = Cx;
+    fn mul(self, o: Cx) -> Cx {
         Cx {
             re: self.re * o.re - self.im * o.im,
             im: self.re * o.im + self.im * o.re,
         }
     }
+}
 
-    pub fn scale(self, k: f64) -> Self {
-        Cx { re: self.re * k, im: self.im * k }
+/// Scaling by a real, used to normalise the inverse transform.
+impl std::ops::Mul<f64> for Cx {
+    type Output = Cx;
+    fn mul(self, k: f64) -> Cx {
+        Cx {
+            re: self.re * k,
+            im: self.im * k,
+        }
     }
 }
 
+/// Twiddle tables, keyed by transform length and direction.
+type TwiddleCache = HashMap<(usize, bool), Rc<Vec<Cx>>>;
+
 thread_local! {
-    static TWIDDLES: RefCell<HashMap<(usize, bool), Rc<Vec<Cx>>>> =
-        RefCell::new(HashMap::new());
+    static TWIDDLES: RefCell<TwiddleCache> = RefCell::new(HashMap::new());
 }
 
 fn twiddles(n: usize, inverse: bool) -> Rc<Vec<Cx>> {
@@ -114,9 +144,9 @@ pub fn transform(a: &mut [Cx], inverse: bool) {
             while lo < n {
                 let hi = lo + half;
                 let u = a[lo];
-                let v = a[hi].mul(w);
-                a[lo] = u.add(v);
-                a[hi] = u.sub(v);
+                let v = a[hi] * w;
+                a[lo] = u + v;
+                a[hi] = u - v;
                 lo += length;
             }
         }
@@ -126,7 +156,7 @@ pub fn transform(a: &mut [Cx], inverse: bool) {
     if inverse {
         let inv = 1.0 / n as f64;
         for value in a.iter_mut() {
-            *value = value.scale(inv);
+            *value = *value * inv;
         }
     }
 }

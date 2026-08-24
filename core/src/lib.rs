@@ -17,8 +17,6 @@ pub mod optimize;
 pub mod sha256;
 pub mod signal;
 
-pub use design::{
-    build_design, BinMode, Channel, Design, DesignError, InputSpec, Shape, Spacing,
-};
+pub use design::{build_design, BinMode, Channel, Design, DesignError, InputSpec, Shape, Spacing};
 pub use optimize::{optimize_design, Effort, OptimizeReport, Progress};
 pub use signal::{relative_peak_factor, sample, schroeder_phases, synthesize};

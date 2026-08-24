@@ -43,7 +43,7 @@ fn num(v: f64) -> String {
 }
 
 fn list<T, F: Fn(&T) -> String>(items: &[T], f: F) -> String {
-    let parts: Vec<String> = items.iter().map(|v| f(v)).collect();
+    let parts: Vec<String> = items.iter().map(f).collect();
     format!("[{}]", parts.join(","))
 }
 
@@ -95,7 +95,11 @@ pub fn artifact_json(design: &mut Design, created_utc: &str) -> String {
     format!("{}, \"sha256\": \"{}\"}}", &body[..body.len() - 1], digest)
 }
 
-pub fn write_json(design: &mut Design, created_utc: &str, path: &std::path::Path) -> io::Result<()> {
+pub fn write_json(
+    design: &mut Design,
+    created_utc: &str,
+    path: &std::path::Path,
+) -> io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(artifact_json(design, created_utc).as_bytes())?;
     file.write_all(b"\n")
@@ -146,6 +150,11 @@ pub fn now_utc_iso() -> String {
 
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60
+        y,
+        m,
+        d,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
     )
 }

@@ -41,11 +41,19 @@ pub fn decimate(values: &[f64], columns: usize, force_band: bool) -> Trace {
 
     let target = (columns * POINT_BUDGET).max(2);
     if n <= target {
-        return Trace::Line(values.iter().enumerate().map(|(i, v)| (i as f64, *v)).collect());
+        return Trace::Line(
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as f64, *v))
+                .collect(),
+        );
     }
     let stride = (n / target).max(2);
-    let mut out: Vec<(f64, f64)> =
-        (0..n).step_by(stride).map(|i| (i as f64, values[i])).collect();
+    let mut out: Vec<(f64, f64)> = (0..n)
+        .step_by(stride)
+        .map(|i| (i as f64, values[i]))
+        .collect();
     if out.last().map(|p| p.0 as usize) != Some(n - 1) {
         out.push(((n - 1) as f64, values[n - 1])); // keep the trace full width
     }
@@ -53,7 +61,7 @@ pub fn decimate(values: &[f64], columns: usize, force_band: bool) -> Trace {
 }
 
 pub fn nice_ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
-    if !(hi > lo) {
+    if hi <= lo || !hi.is_finite() || !lo.is_finite() {
         return vec![lo];
     }
     let raw = (hi - lo) / target.max(1) as f64;
@@ -106,7 +114,14 @@ impl<'a> Axes<'a> {
         if yhi <= ylo {
             yhi = ylo + 1.0;
         }
-        Axes { painter, rect, xlo, xhi, ylo, yhi }
+        Axes {
+            painter,
+            rect,
+            xlo,
+            xhi,
+            ylo,
+            yhi,
+        }
     }
 
     pub fn px(&self, x: f64) -> f32 {
@@ -117,16 +132,32 @@ impl<'a> Axes<'a> {
         self.rect.bottom() - ((y - self.ylo) / (self.yhi - self.ylo)) as f32 * self.rect.height()
     }
 
-    pub fn frame(&self, x_ticks: bool, y_ticks: bool, n_x: usize, n_y: usize, zero: bool,
-                 bottom: bool, left: bool) {
+    #[allow(clippy::too_many_arguments)] // an axis genuinely has this many switches
+    pub fn frame(
+        &self,
+        x_ticks: bool,
+        y_ticks: bool,
+        n_x: usize,
+        n_y: usize,
+        zero: bool,
+        bottom: bool,
+        left: bool,
+    ) {
         self.painter.rect_filled(self.rect, 0.0, PANEL);
 
         let ticks = nice_ticks(self.xlo, self.xhi, n_x);
-        let step = if ticks.len() > 1 { ticks[1] - ticks[0] } else { 1.0 };
+        let step = if ticks.len() > 1 {
+            ticks[1] - ticks[0]
+        } else {
+            1.0
+        };
         for t in &ticks {
             let x = self.px(*t);
             self.painter.line_segment(
-                [Pos2::new(x, self.rect.top()), Pos2::new(x, self.rect.bottom())],
+                [
+                    Pos2::new(x, self.rect.top()),
+                    Pos2::new(x, self.rect.bottom()),
+                ],
                 Stroke::new(THIN, GRID),
             );
             if x_ticks {
@@ -142,11 +173,18 @@ impl<'a> Axes<'a> {
 
         if y_ticks {
             let ticks = nice_ticks(self.ylo, self.yhi, n_y);
-            let step = if ticks.len() > 1 { ticks[1] - ticks[0] } else { 1.0 };
+            let step = if ticks.len() > 1 {
+                ticks[1] - ticks[0]
+            } else {
+                1.0
+            };
             for t in &ticks {
                 let y = self.py(*t);
                 self.painter.line_segment(
-                    [Pos2::new(self.rect.left(), y), Pos2::new(self.rect.right(), y)],
+                    [
+                        Pos2::new(self.rect.left(), y),
+                        Pos2::new(self.rect.right(), y),
+                    ],
                     Stroke::new(THIN, GRID),
                 );
                 self.painter.text(
@@ -162,21 +200,28 @@ impl<'a> Axes<'a> {
         if zero && self.ylo < 0.0 && 0.0 < self.yhi {
             let y = self.py(0.0);
             self.painter.line_segment(
-                [Pos2::new(self.rect.left(), y), Pos2::new(self.rect.right(), y)],
+                [
+                    Pos2::new(self.rect.left(), y),
+                    Pos2::new(self.rect.right(), y),
+                ],
                 Stroke::new(THIN, ZERO),
             );
         }
         if bottom {
             self.painter.line_segment(
-                [Pos2::new(self.rect.left(), self.rect.bottom()),
-                 Pos2::new(self.rect.right(), self.rect.bottom())],
+                [
+                    Pos2::new(self.rect.left(), self.rect.bottom()),
+                    Pos2::new(self.rect.right(), self.rect.bottom()),
+                ],
                 Stroke::new(THIN, FRAME),
             );
         }
         if left {
             self.painter.line_segment(
-                [Pos2::new(self.rect.left(), self.rect.top()),
-                 Pos2::new(self.rect.left(), self.rect.bottom())],
+                [
+                    Pos2::new(self.rect.left(), self.rect.top()),
+                    Pos2::new(self.rect.left(), self.rect.bottom()),
+                ],
                 Stroke::new(THIN, FRAME),
             );
         }
@@ -186,9 +231,12 @@ impl<'a> Axes<'a> {
         if points.len() < 2 {
             return;
         }
-        let pts: Vec<Pos2> =
-            points.iter().map(|(x, y)| Pos2::new(self.px(*x), self.py(*y))).collect();
-        self.painter.add(Shape::line(pts, Stroke::new(width, color)));
+        let pts: Vec<Pos2> = points
+            .iter()
+            .map(|(x, y)| Pos2::new(self.px(*x), self.py(*y)))
+            .collect();
+        self.painter
+            .add(Shape::line(pts, Stroke::new(width, color)));
     }
 
     /// Filled min/max envelope, drawn as translucent vertical spans so a concave
@@ -213,18 +261,24 @@ impl<'a> Axes<'a> {
         let light = tint(color, 0.35);
         for (x, y) in xs.iter().zip(ys) {
             let px = self.px(*x);
-            self.painter
-                .line_segment([Pos2::new(px, base), Pos2::new(px, self.py(*y))], Stroke::new(THIN, light));
+            self.painter.line_segment(
+                [Pos2::new(px, base), Pos2::new(px, self.py(*y))],
+                Stroke::new(THIN, light),
+            );
         }
         for (x, y) in xs.iter().zip(ys) {
-            self.painter.circle_filled(Pos2::new(self.px(*x), self.py(*y)), 3.0, color);
+            self.painter
+                .circle_filled(Pos2::new(self.px(*x), self.py(*y)), 3.0, color);
         }
     }
 
     pub fn hline_dashed(&self, y: f64, color: Color32) {
         let py = self.py(y);
         self.painter.add(Shape::dashed_line(
-            &[Pos2::new(self.rect.left(), py), Pos2::new(self.rect.right(), py)],
+            &[
+                Pos2::new(self.rect.left(), py),
+                Pos2::new(self.rect.right(), py),
+            ],
             Stroke::new(THIN, color),
             4.0,
             4.0,
@@ -234,7 +288,10 @@ impl<'a> Axes<'a> {
     pub fn vline_dashed(&self, x: f64, color: Color32) {
         let px = self.px(x);
         self.painter.add(Shape::dashed_line(
-            &[Pos2::new(px, self.rect.top()), Pos2::new(px, self.rect.bottom())],
+            &[
+                Pos2::new(px, self.rect.top()),
+                Pos2::new(px, self.rect.bottom()),
+            ],
             Stroke::new(THIN, color),
             2.0,
             5.0,
@@ -242,7 +299,8 @@ impl<'a> Axes<'a> {
     }
 
     pub fn text(&self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
-        self.painter.text(pos, align, text, FontId::proportional(size), color);
+        self.painter
+            .text(pos, align, text, FontId::proportional(size), color);
     }
 }
 

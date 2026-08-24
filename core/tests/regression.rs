@@ -9,7 +9,9 @@ use std::f64::consts::PI;
 
 fn fixture() -> (Vec<usize>, Vec<f64>, Vec<f64>, usize) {
     let bins = vec![2usize, 5, 9, 14, 20, 27, 33, 41, 50];
-    let amps: Vec<f64> = (0..bins.len()).map(|i| 1.0 / ((i + 1) as f64).powf(0.3)).collect();
+    let amps: Vec<f64> = (0..bins.len())
+        .map(|i| 1.0 / ((i + 1) as f64).powf(0.3))
+        .collect();
     let ph: Vec<f64> = (0..bins.len())
         .map(|i| (0.7 * i as f64 + 1.3).rem_euclid(2.0 * PI))
         .collect();
@@ -19,8 +21,9 @@ fn fixture() -> (Vec<usize>, Vec<f64>, Vec<f64>, usize) {
 #[test]
 fn fft_round_trips() {
     for n in [256usize, 1024, 4096] {
-        let original: Vec<Cx> =
-            (0..n).map(|i| Cx::new((i as f64 * 0.7).sin(), 0.0)).collect();
+        let original: Vec<Cx> = (0..n)
+            .map(|i| Cx::new((i as f64 * 0.7).sin(), 0.0))
+            .collect();
         let mut a = original.clone();
         transform(&mut a, false);
         transform(&mut a, true);
@@ -62,7 +65,12 @@ fn lp_gradient_matches_finite_differences() {
             let fd = (lp_cost_gradient(&bins, &amps, &up, n, p).0
                 - lp_cost_gradient(&bins, &amps, &down, n, p).0)
                 / (2.0 * h);
-            assert!((g[i] - fd).abs() < 1e-6, "p={p} tone {i}: {} vs {}", g[i], fd);
+            assert!(
+                (g[i] - fd).abs() < 1e-6,
+                "p={p} tone {i}: {} vs {}",
+                g[i],
+                fd
+            );
         }
     }
 }
@@ -86,11 +94,7 @@ fn primitives_match_reference() {
 #[test]
 fn rng_matches_reference() {
     let mut rng = Rng::new(0);
-    let expected = [
-        6.389921564551887e-1,
-        3.8033586068119956,
-        2.5209157560606856,
-    ];
+    let expected = [6.389921564551887e-1, 3.8033586068119956, 2.5209157560606856];
     for want in expected {
         let got = rng.uniform(0.0, 2.0 * PI);
         assert!((got - want).abs() < 1e-12, "{got} vs {want}");
@@ -111,9 +115,11 @@ fn specs(n: usize, f_min: f64, f_max: f64, tones: usize) -> Vec<InputSpec> {
 
 #[test]
 fn bins_are_mutually_exclusive_and_span_the_band() {
-    for (n, f_min, f_max, tones) in
-        [(4usize, 0.1, 3.0, 8usize), (8, 0.3, 6.0, 5), (2, 0.2, 5.0, 20)]
-    {
+    for (n, f_min, f_max, tones) in [
+        (4usize, 0.1, 3.0, 8usize),
+        (8, 0.3, 6.0, 5),
+        (2, 0.2, 5.0, 20),
+    ] {
         let d = build_design(&specs(n, f_min, f_max, tones), 30.0, 2, 100.0, BinMode::All)
             .expect("design");
         let mut all: Vec<usize> = d.channels.iter().flat_map(|c| c.bins.clone()).collect();
@@ -124,13 +130,21 @@ fn bins_are_mutually_exclusive_and_span_the_band() {
 
         // an evenly spaced harmonic set optimises far better than a nearly-even one
         for ch in &d.channels {
-            let steps: Vec<usize> =
-                ch.bins.windows(2).map(|w| w[1] - w[0]).collect();
+            let steps: Vec<usize> = ch.bins.windows(2).map(|w| w[1] - w[0]).collect();
             let uniform = steps.windows(2).all(|w| w[0] == w[1]);
-            assert!(uniform, "{} did not get an arithmetic run: {:?}", ch.name, ch.bins);
+            assert!(
+                uniform,
+                "{} did not get an arithmetic run: {:?}",
+                ch.name, ch.bins
+            );
         }
         let (lo, hi) = d.bin_range;
-        let covered = d.channels.iter().map(|c| *c.bins.last().unwrap()).max().unwrap()
+        let covered = d
+            .channels
+            .iter()
+            .map(|c| *c.bins.last().unwrap())
+            .max()
+            .unwrap()
             - d.channels.iter().map(|c| c.bins[0]).min().unwrap();
         assert!(
             covered as f64 >= 0.85 * (hi - lo) as f64,
@@ -189,11 +203,30 @@ fn optimising_one_channel_leaves_the_others_alone() {
 #[test]
 fn heterogeneous_inputs_are_allowed() {
     let specs = vec![
-        InputSpec { name: "ail".into(), f_min: 0.1, f_max: 3.0, n_tones: 10, ..Default::default() },
-        InputSpec { name: "rud".into(), f_min: 0.5, f_max: 8.0, n_tones: 6, peak_limit: 0.5,
-                    spacing: Spacing::Logarithmic, shape: Shape::InvF, ..Default::default() },
-        InputSpec { name: "thr".into(), f_min: 0.05, f_max: 1.0, n_tones: 12, peak_limit: 0.35,
-                    ..Default::default() },
+        InputSpec {
+            name: "ail".into(),
+            f_min: 0.1,
+            f_max: 3.0,
+            n_tones: 10,
+            ..Default::default()
+        },
+        InputSpec {
+            name: "rud".into(),
+            f_min: 0.5,
+            f_max: 8.0,
+            n_tones: 6,
+            peak_limit: 0.5,
+            spacing: Spacing::Logarithmic,
+            shape: Shape::InvF,
+        },
+        InputSpec {
+            name: "thr".into(),
+            f_min: 0.05,
+            f_max: 1.0,
+            n_tones: 12,
+            peak_limit: 0.35,
+            ..Default::default()
+        },
     ];
     let d = build_design(&specs, 30.0, 2, 100.0, BinMode::All).unwrap();
     assert_eq!(d.channels.len(), 3);

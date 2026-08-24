@@ -3,7 +3,9 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $Root "dist"
-$Version = (Select-String -Path (Join-Path $Root "Cargo.toml") -Pattern '^version' | Select-Object -First 1) -replace '.*"(.*)".*','$1'
+$Version = ((Select-String -Path (Join-Path $Root "Cargo.toml") -Pattern '^version' |
+             Select-Object -First 1).Line -replace '.*"(.*)".*', '$1').Trim()
+if (-not $Version) { throw "could not read version from Cargo.toml" }
 
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 Write-Host "==> building"

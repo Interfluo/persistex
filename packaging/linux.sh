@@ -53,7 +53,9 @@ if command -v appimagetool >/dev/null 2>&1; then
   echo "$DESKTOP" > "$APPDIR/persistex.desktop"
   printf '#!/bin/sh\nexec "$(dirname "$0")/usr/bin/persistex" "$@"\n' > "$APPDIR/AppRun"
   chmod +x "$APPDIR/AppRun"
-  ARCH=x86_64 appimagetool "$APPDIR" "$DIST/persistex-${VERSION}-linux-x86_64.AppImage"
+  # extract-and-run avoids needing FUSE, which CI runners do not have
+  ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+    appimagetool "$APPDIR" "$DIST/persistex-${VERSION}-linux-x86_64.AppImage"
 else
   echo "==> skipping AppImage (appimagetool not on PATH)"
 fi
