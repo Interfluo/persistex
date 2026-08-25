@@ -57,8 +57,7 @@ pub fn artifact_json(design: &mut Design, created_utc: &str) -> String {
         let rpf = ch.rpf();
         channels.push(format!(
             "{{\"name\":\"{}\",\"bins\":{},\"frequencies_hz\":{},\"amplitudes\":{},\
-             \"phases_rad\":{},\"peak_limit\":{},\"rpf\":{},\"spec\":{{\"f_min_hz\":{},\
-             \"f_max_hz\":{},\"n_tones\":{},\"shape\":\"{}\",\"spacing\":\"{}\"}}}}",
+             \"phases_rad\":{},\"peak_limit\":{},\"rpf\":{},\"requested_hz\":{}}}",
             escape(&ch.name),
             list(&ch.bins, |k| k.to_string()),
             list(&freqs, |v| num(*v)),
@@ -66,19 +65,14 @@ pub fn artifact_json(design: &mut Design, created_utc: &str) -> String {
             list(&ch.phases, |v| num(*v)),
             num(ch.peak_limit),
             num(rpf),
-            num(spec.f_min),
-            num(spec.f_max),
-            spec.n_tones,
-            escape(spec.shape.label()),
-            escape(spec.spacing.label()),
+            list(&spec.tones, |t| num(t.frequency)),
         ));
     }
 
     let body = format!(
         "{{\"format\":\"persistex.excitation\",\"version\":1,\"created_utc\":\"{}\",\
          \"sample_rate_hz\":{},\"fundamental_hz\":{},\"record_length_s\":{},\
-         \"n_periods\":{},\"duration_s\":{},\"n_samples\":{},\"bin_mode\":\"{}\",\
-         \"channels\":[{}]}}",
+         \"n_periods\":{},\"duration_s\":{},\"n_samples\":{},\"channels\":[{}]}}",
         escape(created_utc),
         num(design.fs),
         num(design.f0),
@@ -86,7 +80,6 @@ pub fn artifact_json(design: &mut Design, created_utc: &str) -> String {
         design.n_periods,
         num(design.duration()),
         design.n_samples(),
-        escape(design.bin_mode.label()),
         channels.join(",")
     );
 

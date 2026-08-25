@@ -5,67 +5,141 @@
 mod plots;
 mod table;
 mod theme;
+mod tones;
 
 use egui::{Align2, Pos2, Rect, Vec2};
-use persistex_core::design::{build_design, BinMode, Design, InputSpec, Shape, Spacing};
+use persistex_core::design::{build_design, Design, InputSpec, Tone};
 use persistex_core::export;
 use persistex_core::optimize::{optimize_design, Effort, Progress};
 use plots::{decimate, Axes, Trace};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use theme::*;
+use tones::GeneratorRow;
 
-/// Editable string form of an `InputSpec`, so typing is never fought by parsing.
+/// One tone as edited: frequency and period are kept in step, either may be typed.
 #[derive(Clone)]
-pub struct SpecRow {
-    pub name: String,
-    pub f_min: String,
-    pub f_max: String,
-    pub n_tones: String,
-    pub peak: String,
-    pub shape: Shape,
-    pub spacing: Spacing,
+pub struct ToneRow {
+    pub frequency: String,
+    pub period: String,
+    pub amplitude: String,
 }
 
-impl SpecRow {
-    fn from_spec(s: &InputSpec) -> Self {
-        SpecRow {
-            name: s.name.clone(),
-            f_min: fmt(s.f_min),
-            f_max: fmt(s.f_max),
-            n_tones: s.n_tones.to_string(),
-            peak: fmt(s.peak_limit),
-            shape: s.shape,
-            spacing: s.spacing,
+impl ToneRow {
+    pub fn new(frequency: f64, amplitude: f64) -> Self {
+        let mut row = ToneRow {
+            frequency: fmt(frequency),
+            period: String::new(),
+            amplitude: fmt(amplitude),
+        };
+        row.sync_from_frequency();
+        row
+    }
+
+    pub fn from_tone(t: &Tone) -> Self {
+        ToneRow::new(t.frequency, t.amplitude)
+    }
+
+    pub fn frequency_value(&self) -> Option<f64> {
+        self.frequency
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| *v > 0.0)
+    }
+
+    /// Period follows frequency.
+    pub fn sync_from_frequency(&mut self) {
+        self.period = match self.frequency_value() {
+            Some(f) => fmt(1.0 / f),
+            None => String::new(),
+        };
+    }
+
+    /// ...and frequency follows period, so either column can be the one typed in.
+    pub fn sync_from_period(&mut self) {
+        if let Ok(p) = self.period.trim().parse::<f64>() {
+            if p > 0.0 {
+                self.frequency = fmt(1.0 / p);
+            }
         }
     }
 
-    fn parse(&self) -> Result<InputSpec, String> {
-        let num = |raw: &str, field: &str| -> Result<f64, String> {
-            raw.trim()
-                .parse::<f64>()
-                .map_err(|_| format!("{}: {} is not a number", self.name, field))
-        };
-        Ok(InputSpec {
-            name: self.name.trim().to_string(),
-            f_min: num(&self.f_min, "f min")?,
-            f_max: num(&self.f_max, "f max")?,
-            n_tones: self
-                .n_tones
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| format!("{}: tones must be a whole number", self.name))?,
-            peak_limit: num(&self.peak, "peak")?,
-            shape: self.shape,
-            spacing: self.spacing,
-        })
+    pub fn parse(&self) -> Option<Tone> {
+        let f = self.frequency_value()?;
+        let a = self.amplitude.trim().parse::<f64>().ok()?;
+        Some(Tone::new(f, a))
     }
 }
 
+/// Editable string form of an `InputSpec`.
+#[derive(Clone)]
+pub struct SpecRow {
+    pub name: String,
+    pub peak: String,
+    pub tones: Vec<ToneRow>,
+    pub generator: GeneratorRow,
+}
+
+impl SpecRow {
+    pub fn new(name: &str, peak: f64, tones: Vec<ToneRow>) -> Self {
+        SpecRow {
+            name: name.into(),
+            peak: fmt(peak),
+            tones,
+            generator: GeneratorRow::default(),
+        }
+    }
+
+    pub fn parse(&self) -> Result<InputSpec, String> {
+        let peak = self
+            .peak
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("{}: peak is not a number", self.name))?;
+        let tones: Vec<Tone> = self.tones.iter().filter_map(|t| t.parse()).collect();
+        if tones.is_empty() {
+            return Err(format!("{}: add at least one tone", self.name));
+        }
+        Ok(InputSpec {
+            name: self.name.trim().to_string(),
+            peak_limit: peak,
+            tones,
+        })
+    }
+
+    pub fn band(&self) -> Option<(f64, f64)> {
+        let mut values: Vec<f64> = self
+            .tones
+            .iter()
+            .filter_map(|t| t.frequency_value())
+            .collect();
+        if values.is_empty() {
+            return None;
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        Some((values[0], values[values.len() - 1]))
+    }
+}
+
+/// Compact, round-trippable formatting for the editable fields.
 fn fmt(v: f64) -> String {
-    let s = format!("{}", v);
+    if !v.is_finite() {
+        return String::new();
+    }
+    if v == v.trunc() && v.abs() < 1e12 {
+        return format!("{}", v as i64);
+    }
+    let mut s = format!("{:.6}", v);
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
     s
 }
 
@@ -96,7 +170,6 @@ pub struct App {
     record: String,
     repeats: String,
     fs: String,
-    bin_mode: BinMode,
     effort: Effort,
 
     design: Option<Design>,
@@ -114,26 +187,36 @@ pub struct App {
     progress: f32,
     tab: usize,
     dirty: bool,
+    /// Which input's tone editor is open, if any.
+    pub editing: Option<usize>,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let defaults = [
-            InputSpec {
-                name: "ail".into(),
-                ..Default::default()
-            },
-            InputSpec {
-                name: "ele".into(),
-                ..Default::default()
-            },
-        ];
+        // two inputs interleaved over the same band, as a starting point
+        let f0 = 1.0 / 30.0;
+        let mut taken: HashSet<usize> = HashSet::new();
+        let mut rows = Vec::new();
+        for name in ["ail", "ele"] {
+            let generator = GeneratorRow::default();
+            let tones = match generator.parse() {
+                Some(spec) => persistex_core::design::generate_tones(&spec, f0, &taken),
+                None => Vec::new(),
+            };
+            for t in &tones {
+                taken.insert((t.frequency / f0).round() as usize);
+            }
+            rows.push(SpecRow::new(
+                name,
+                1.0,
+                tones.iter().map(ToneRow::from_tone).collect(),
+            ));
+        }
         App {
-            rows: defaults.iter().map(SpecRow::from_spec).collect(),
+            rows,
             record: "30".into(),
             repeats: "2".into(),
             fs: "100".into(),
-            bin_mode: BinMode::All,
             effort: Effort::Standard,
             design: None,
             timeseries: Vec::new(),
@@ -148,6 +231,7 @@ impl Default for App {
             progress: 0.0,
             tab: 0,
             dirty: true,
+            editing: None,
         }
     }
 }
@@ -183,7 +267,7 @@ impl App {
             }
         };
 
-        match build_design(&specs, record, repeats, fs, self.bin_mode) {
+        match build_design(&specs, record, repeats, fs) {
             Ok(design) => {
                 self.design = Some(design);
                 self.error = None;
@@ -221,8 +305,6 @@ impl App {
             .collect();
 
         let used = design.used_bins();
-        let available = design.available_bins();
-        let per_period = design.samples_per_period();
         let mut info = vec![
             (
                 format!(
@@ -233,10 +315,7 @@ impl App {
                 false,
             ),
             (
-                format!(
-                    "bins {} of {} in {}-{}",
-                    used, available, design.bin_range.0, design.bin_range.1
-                ),
+                format!("{} tones across {} input(s)", used, design.channels.len()),
                 false,
             ),
             (
@@ -252,22 +331,11 @@ impl App {
                 format!("{} samples at {:.4} Hz", design.n_samples(), design.fs),
                 false,
             ),
+            (format!("nyquist {:.4} Hz", design.nyquist()), false),
         ];
-        if (per_period - per_period.round()).abs() > 1e-9 {
-            info.push((
-                format!(
-                    "fs / f0 = {:.3} is not an integer, so repeats will not join seamlessly.",
-                    per_period
-                ),
-                true,
-            ));
-        }
-        if used as f64 > available as f64 * 0.9 {
-            info.push((
-                "Almost every bin is in use -- no empty bins left to reveal nonlinear distortion."
-                    .into(),
-                true,
-            ));
+        // Anything questionable is reported, never refused.
+        for warning in &design.warnings {
+            info.push((warning.clone(), true));
         }
         self.info = info;
     }
@@ -397,6 +465,8 @@ impl App {
             .resizable(false)
             .show(ctx, |ui| table::show(self, ui, ctx));
 
+        self.show_tone_editor(ctx);
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, 0, "  Time domain  ");
@@ -444,29 +514,6 @@ impl App {
             changed |= field(ui, "Length (s)", &mut self.record);
             changed |= field(ui, "Repeats", &mut self.repeats);
             changed |= field(ui, "Sample rate", &mut self.fs);
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [84.0, 18.0],
-                    egui::Label::new(
-                        egui::RichText::new("Harmonics")
-                            .size(SIZE_SMALL)
-                            .color(TEXT),
-                    ),
-                );
-                egui::ComboBox::from_id_salt("binmode")
-                    .selected_text(self.bin_mode.label())
-                    .width(96.0)
-                    .show_ui(ui, |ui| {
-                        for m in BinMode::ALL {
-                            if ui
-                                .selectable_value(&mut self.bin_mode, m, m.label())
-                                .changed()
-                            {
-                                changed = true;
-                            }
-                        }
-                    });
-            });
         });
 
         ui.add_space(8.0);
@@ -568,6 +615,47 @@ impl App {
         }
     }
 
+    /// The per-tone editor for whichever input was clicked.
+    fn show_tone_editor(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.editing else { return };
+        if index >= self.rows.len() {
+            self.editing = None;
+            return;
+        }
+        let f0 = self
+            .record
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| *v > 0.0)
+            .map(|v| 1.0 / v)
+            .unwrap_or(1.0 / 30.0);
+
+        // bins already used by the *other* inputs, so a generated set steps around
+        // them and the inputs stay orthogonal over the record
+        let mut taken: HashSet<usize> = HashSet::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            if i == index {
+                continue;
+            }
+            for tone in &row.tones {
+                if let Some(f) = tone.frequency_value() {
+                    taken.insert((f / f0).round().max(1.0) as usize);
+                }
+            }
+        }
+
+        let mut row = self.rows[index].clone();
+        let outcome = tones::show(ctx, &mut row, index, f0, &taken);
+        self.rows[index] = row;
+        if outcome.changed {
+            self.dirty = true;
+        }
+        if outcome.close {
+            self.editing = None;
+        }
+    }
+
     fn save_csv(&mut self) {
         let Some(design) = self.design.as_mut() else {
             return;
@@ -577,8 +665,19 @@ impl App {
             .add_filter("CSV", &["csv"])
             .save_file()
         {
+            let aliased = design.aliased_tones();
             match export::write_csv(design, &path) {
-                Ok(()) => self.status = format!("wrote {}", path.display()),
+                Ok(()) => {
+                    self.status = if aliased.is_empty() {
+                        format!("wrote {}", path.display())
+                    } else {
+                        format!(
+                            "wrote {} -- warning: {} tone(s) at or above Nyquist will alias",
+                            path.display(),
+                            aliased.len()
+                        )
+                    }
+                }
                 Err(e) => self.status = format!("could not write: {}", e),
             }
         }
@@ -855,73 +954,118 @@ mod tests {
             .metrics
             .iter()
             .all(|(rpf, _)| rpf.is_finite() && *rpf > 0.0));
-        assert!(app.status.contains("2 inputs"));
+        // the two default inputs are generated interleaved, so no shared bins
+        assert!(app.design.as_ref().unwrap().shared_bins().is_empty());
     }
 
     #[test]
-    fn both_tabs_render() {
+    fn both_tabs_and_the_tone_editor_render() {
         let mut app = App::default();
         run(&mut app, 2);
         app.tab = 1;
         run(&mut app, 2);
-        assert!(app.error.is_none());
-    }
-
-    #[test]
-    fn editing_a_row_rebuilds() {
-        let mut app = App::default();
+        app.editing = Some(0);
         run(&mut app, 2);
-        app.rows[0].f_max = "1.5".into();
-        app.rows[0].n_tones = "20".into();
-        app.mark_dirty();
-        run(&mut app, 2);
-        let design = app.design.as_ref().unwrap();
-        assert_eq!(design.channels[0].n_tones(), 20);
-        assert!(design.channels[0].frequencies().last().unwrap() <= &1.5);
-    }
-
-    #[test]
-    fn heterogeneous_rows_render() {
-        let mut app = App::default();
-        app.rows.push(SpecRow::from_spec(&InputSpec {
-            name: "rud".into(),
-            f_min: 0.5,
-            f_max: 8.0,
-            n_tones: 6,
-            peak_limit: 0.5,
-            shape: Shape::InvF,
-            spacing: Spacing::Logarithmic,
-        }));
-        app.rows.push(SpecRow::from_spec(&InputSpec {
-            name: "thr".into(),
-            f_min: 0.05,
-            f_max: 1.0,
-            n_tones: 12,
-            peak_limit: 0.35,
-            ..Default::default()
-        }));
-        app.mark_dirty();
-        run(&mut app, 3);
         assert!(app.error.is_none(), "{:?}", app.error);
-        assert_eq!(app.design.as_ref().unwrap().channels.len(), 4);
+        assert_eq!(app.editing, Some(0));
+    }
+
+    #[test]
+    fn frequency_and_period_stay_in_step() {
+        let mut t = ToneRow::new(0.25, 1.0);
+        assert_eq!(t.period, "4");
+        t.period = "2".into();
+        t.sync_from_period();
+        assert_eq!(t.frequency, "0.5");
+        t.frequency = "4".into();
+        t.sync_from_frequency();
+        assert_eq!(t.period, "0.25");
+    }
+
+    #[test]
+    fn editing_a_tone_rebuilds_the_design() {
+        let mut app = App::default();
+        run(&mut app, 2);
+        app.rows[0].tones.truncate(3);
+        app.rows[0].tones[0].frequency = "0.25".into();
+        app.rows[0].tones[0].sync_from_frequency();
+        app.mark_dirty();
+        run(&mut app, 2);
+        let d = app.design.as_ref().unwrap();
+        assert_eq!(d.channels[0].n_tones(), 3);
+        // snapped to the nearest harmonic of f0
+        let got = d.channels[0].frequencies();
+        assert!(
+            got.iter().any(|f| (f - 0.25).abs() < 0.5 / 30.0 + 1e-9),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn two_tones_on_the_same_harmonic_collapse_with_a_warning() {
+        let mut app = App::default();
+        run(&mut app, 2);
+        // 0.7 and 0.701 Hz both land on bin 21 at f0 = 1/30
+        app.rows[0].tones = vec![ToneRow::new(0.7, 1.0), ToneRow::new(0.701, 1.0)];
+        app.mark_dirty();
+        run(&mut app, 2);
+        let d = app.design.as_ref().unwrap();
+        assert_eq!(d.channels[0].n_tones(), 1);
+        assert!(
+            d.warnings.iter().any(|w| w.contains("collides")),
+            "{:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn arbitrary_tone_sets_are_accepted() {
+        let mut app = App::default();
+        run(&mut app, 2);
+        app.rows[0].tones = ["0.37", "1.9", "4.4"]
+            .iter()
+            .map(|f| ToneRow::new(f.parse().unwrap(), 1.0))
+            .collect();
+        app.mark_dirty();
+        run(&mut app, 2);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.design.as_ref().unwrap().channels[0].n_tones(), 3);
+    }
+
+    #[test]
+    fn above_nyquist_warns_but_still_builds() {
+        let mut app = App::default();
+        run(&mut app, 2);
+        app.rows[0].tones = vec![ToneRow::new(80.0, 1.0)];
+        app.mark_dirty();
+        run(&mut app, 2);
+        assert!(
+            app.error.is_none(),
+            "should not be refused: {:?}",
+            app.error
+        );
+        let d = app.design.as_ref().unwrap();
+        assert!(d.warnings.iter().any(|w| w.contains("Nyquist")));
+        assert!(app
+            .info
+            .iter()
+            .any(|(t, warn)| *warn && t.contains("Nyquist")));
     }
 
     #[test]
     fn bad_input_surfaces_an_error_without_panicking() {
         let mut app = App::default();
         run(&mut app, 2);
-        app.rows[1].n_tones = "900".into();
+        app.rows[1].tones.clear();
         app.mark_dirty();
         run(&mut app, 2);
-        assert!(app.error.as_ref().unwrap().contains("ele"));
+        assert!(
+            app.error.as_ref().unwrap().contains("ele"),
+            "{:?}",
+            app.error
+        );
 
-        app.rows[1].f_min = "not a number".into();
-        app.mark_dirty();
-        run(&mut app, 2);
-        assert!(app.error.is_some());
-
-        app.rows[1].f_min = "0.1".into();
-        app.rows[1].n_tones = "10".into();
+        app.rows[1].tones = vec![ToneRow::new(1.0, 1.0)];
         app.mark_dirty();
         run(&mut app, 2);
         assert!(app.error.is_none(), "{:?}", app.error);

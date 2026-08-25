@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-  <img src="docs/logo-light.svg" alt="persistex" width="623">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+  <img src="docs/logo.png" alt="persistex" width="623">
 </picture>
 
 Excitation signal design for system identification of generic UAS — multirotor,
@@ -43,38 +43,42 @@ which buys more injected energy for a given peak actuator deflection.
 
 ## Using it
 
-Each input is a row, with its own band, tone count, peak limit, spectral shaping
-and spacing — channels need not resemble one another.
+Each input is a row: a name, an actuator peak limit, and a set of tones. Click the
+**tones** button on a row to open its editor.
 
-| Column | Meaning |
-|---|---|
-| Input | channel name, used in the CSV header and the JSON artifact |
-| f min / f max | this input's own band |
-| Tones | tones for this input alone |
-| Peak | actuator limit. The channel is scaled so its waveform peak equals this |
-| Amplitude | spectral shaping, flat through 1/f^1.5 |
-| Spacing | linear or logarithmic across this input's band |
-| RPF / Allocated band | computed. The band actually achieved after bins snap to the harmonic grid |
+### The tone editor
 
-**Optimise all** does every input; each row's **Run** does that input alone, which
-is what you want after editing one row. Phases start from Schroeder, so a design
-is already reasonable before you optimise at all. **Effort** picks the search
-budget: fast (1 start), standard (3), thorough (8 starts, p to 512).
+A table of **frequency / period / amplitude**, one row per tone. Type into either
+frequency or period and the other follows, so you can specify a 4-second tone
+without doing the arithmetic. Amplitude defaults to 1 and is per tone.
 
-Record settings are global: length (the fundamental period `T`, which sets
-resolution `f0 = 1/T`), repeats, sample rate, and all harmonics versus odd only —
-odd-only puts even-order distortion on empty bins where it can be measured.
-Prefer a record length where `sample rate × length` is a whole number, or repeats
-will not join seamlessly; the side panel warns when it is not.
+Above the table are generators for when you do not want to type twenty rows: give
+a band, a count, linear or logarithmic spacing, and an amplitude shape, then
+**Replace** or **Append**. The generated rows are ordinary rows -- edit any of
+them afterwards.
 
-### Bin allocation
+Generation steps around bins already used by other inputs, so generated sets stay
+mutually exclusive and the inputs remain separable. Linear spacing looks for an
+exact arithmetic progression, which optimises far better than a nearly-even one:
+jittering a run by a single bin can cost 30% of RPF.
 
-Bins are allocated as **exact arithmetic progressions** wherever one fits the free
-bins and spans at least 85% of the requested band. This matters more than it
-sounds: an evenly spaced harmonic set optimises far better than a nearly-even one,
-and jittering a run by a single bin can cost 30% of RPF. Bins stay mutually
-exclusive across inputs whatever bands you ask for — that is what keeps the inputs
-orthogonal over the record.
+Frequencies snap to the nearest multiple of `f0 = 1/record_length`, since only
+harmonics of the record are periodic over it. The row shows the band you asked
+for and the band actually allocated.
+
+**Optimise all** does every input; a row's **Run** does that input alone. Phases
+start from Schroeder, so a design is reasonable before you optimise at all.
+**Effort** picks the search budget: fast (1 start), standard (3), thorough (8).
+
+## Record settings
+
+Length is the fundamental period `T`, setting resolution `f0 = 1/T`. Repeats is
+how many times the record plays back to back. Sample rate is the output rate.
+
+The tool does not refuse designs. Tones above Nyquist, tones from two inputs
+landing on the same harmonic, a record length that does not divide the sample
+rate -- all of these are reported in the side panel and, for Nyquist, again when
+exporting a CSV. None of them stop you building the signal.
 
 ### RPF
 

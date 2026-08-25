@@ -3,6 +3,28 @@
 Excitation signal design and system identification for generic UAS
 (multirotor / fixed-wing / hybrid transition vehicles).
 
+## Per-tone specification (2026-08-24)
+
+Replaced the band+count+spacing input model with **explicit per-tone lists**. Each
+input now carries a `Vec<Tone>` of (frequency, amplitude); the GUI edits them in a
+table offering frequency and period as interchangeable columns.
+
+**Why:** the automatic model could only express what its parameters covered, and
+its guards (Nyquist as a hard error, bin-exhaustion errors) blocked designs the
+user had good reason to want. Generators now produce tone lists that are then
+freely editable, which keeps the convenience without the ceiling.
+
+Guards are gone. Frequencies snap to the nearest harmonic of f0 and everything
+questionable becomes a `Design::warnings` entry: above Nyquist, two inputs sharing
+a bin, two tones of one input colliding on a harmonic, a record length that does
+not divide the sample rate. The only hard errors left are structural -- no inputs,
+no tones, or a non-positive record length or sample rate. Nyquist is repeated at
+CSV export, where it actually bites.
+
+The arithmetic-progression search survives inside the **linear generator**, where
+it still buys what it always did; it just no longer forces itself on a user who
+wants something else.
+
 ## Production port (2026-08-23)
 
 The tool is a Rust application: a **zero-dependency `core`** (own FFT, L-BFGS,

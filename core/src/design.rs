@@ -73,70 +73,208 @@ impl Spacing {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinMode {
-    All,
-    Odd,
+/// One tone: a requested frequency and its amplitude.
+///
+/// The frequency is what the user asked for. What actually gets synthesised is the
+/// nearest harmonic of f0 = 1/record_length, reported back as the tone's bin.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tone {
+    pub frequency: f64,
+    pub amplitude: f64,
 }
 
-impl BinMode {
-    pub const ALL: [BinMode; 2] = [BinMode::All, BinMode::Odd];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            BinMode::All => "all harmonics",
-            BinMode::Odd => "odd harmonics",
+impl Tone {
+    pub fn new(frequency: f64, amplitude: f64) -> Self {
+        Tone {
+            frequency,
+            amplitude,
         }
     }
 
-    pub fn is_odd(self) -> bool {
-        matches!(self, BinMode::Odd)
+    /// Period in seconds. The GUI offers this as an alternative way in.
+    pub fn period(&self) -> f64 {
+        if self.frequency > 0.0 {
+            1.0 / self.frequency
+        } else {
+            f64::INFINITY
+        }
     }
 }
 
-/// Per-input excitation specification. Each input carries its own band, tone count,
-/// shaping and spacing, so channels need not resemble one another.
+/// Per-input excitation specification: a name, an actuator limit, and its tones.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputSpec {
     pub name: String,
-    pub f_min: f64,
-    pub f_max: f64,
-    pub n_tones: usize,
     pub peak_limit: f64,
-    pub shape: Shape,
-    pub spacing: Spacing,
+    pub tones: Vec<Tone>,
 }
 
 impl Default for InputSpec {
     fn default() -> Self {
         InputSpec {
             name: "u1".into(),
-            f_min: 0.1,
-            f_max: 3.0,
-            n_tones: 10,
             peak_limit: 1.0,
-            shape: Shape::Flat,
-            spacing: Spacing::Linear,
+            tones: Vec::new(),
         }
     }
 }
 
 impl InputSpec {
-    pub fn validate(&self) -> Result<(), DesignError> {
-        if self.name.trim().is_empty() {
-            return Err(design_err!("every input needs a name"));
+    pub fn with_tones(name: &str, peak_limit: f64, tones: Vec<Tone>) -> Self {
+        InputSpec {
+            name: name.into(),
+            peak_limit,
+            tones,
         }
-        if !(self.f_min > 0.0 && self.f_min < self.f_max) {
-            return Err(design_err!("{}: require 0 < f min < f max", self.name));
-        }
-        if self.n_tones < 1 {
-            return Err(design_err!("{}: needs at least one tone", self.name));
-        }
-        if self.peak_limit <= 0.0 {
-            return Err(design_err!("{}: peak limit must be positive", self.name));
-        }
-        Ok(())
     }
+}
+
+/// How tones are laid out when generating a set. Amplitudes follow `shape`,
+/// normalised so the largest equals `amplitude`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Generator {
+    pub f_min: f64,
+    pub f_max: f64,
+    pub count: usize,
+    pub spacing: Spacing,
+    pub shape: Shape,
+    pub amplitude: f64,
+    pub odd_only: bool,
+}
+
+impl Default for Generator {
+    fn default() -> Self {
+        Generator {
+            f_min: 0.1,
+            f_max: 3.0,
+            count: 10,
+            spacing: Spacing::Linear,
+            shape: Shape::Flat,
+            amplitude: 1.0,
+            odd_only: false,
+        }
+    }
+}
+
+/// Find the widest exact arithmetic bin progression that fits the free bins.
+///
+/// Worth searching for: an evenly spaced harmonic set optimises far better than a
+/// nearly-even one. Snapping ideal positions to the nearest free bin leaves spacings
+/// like 11,11,12,11 -- and measured over 8 tones that irregularity costs ~30% of RPF
+/// against a true arithmetic run. When several inputs share a band, each in turn
+/// finds a run offset from the others, which is Morelli's interleave exactly.
+fn arithmetic_run(
+    free: &HashSet<usize>,
+    k_lo: usize,
+    k_hi: usize,
+    count: usize,
+    odd_only: bool,
+) -> Option<Vec<usize>> {
+    if count == 1 {
+        return free.iter().min().map(|&k| vec![k]);
+    }
+    let step = if odd_only { 2 } else { 1 };
+    if k_hi <= k_lo {
+        return None;
+    }
+    let widest = (k_hi - k_lo) / (count - 1);
+    // A run that cannot reach across the band is not worth having: covering 0.1-1 Hz
+    // when 0.1-2 Hz was asked for is a worse design than an unevenly spaced one.
+    let needed = 0.85 * (k_hi - k_lo) as f64;
+
+    let mut d = widest.saturating_sub(widest % step);
+    while d >= step {
+        if (((count - 1) * d) as f64) < needed {
+            break;
+        }
+        let last_start = k_hi.saturating_sub((count - 1) * d);
+        for start in k_lo..=last_start {
+            let run: Vec<usize> = (0..count).map(|j| start + j * d).collect();
+            if run.iter().all(|k| free.contains(k)) {
+                return Some(run);
+            }
+        }
+        d -= step;
+    }
+    None
+}
+
+/// Build a set of tones. `avoid` lists bins already taken by other inputs, which the
+/// generator steps around so the inputs stay orthogonal over the record.
+pub fn generate_tones(gen: &Generator, f0: f64, avoid: &HashSet<usize>) -> Vec<Tone> {
+    if gen.count == 0 || f0 <= 0.0 {
+        return Vec::new();
+    }
+    let (lo, hi) = if gen.f_min <= gen.f_max {
+        (gen.f_min, gen.f_max)
+    } else {
+        (gen.f_max, gen.f_min)
+    };
+    let k_lo = ((lo / f0).round() as usize).max(1);
+    let k_hi = ((hi / f0).round() as usize).max(k_lo + 1);
+
+    let free: HashSet<usize> = (k_lo..=k_hi)
+        .filter(|k| !avoid.contains(k) && (!gen.odd_only || k % 2 == 1))
+        .collect();
+
+    let bins: Vec<usize> = if gen.spacing == Spacing::Linear {
+        arithmetic_run(&free, k_lo, k_hi, gen.count, gen.odd_only)
+            .unwrap_or_else(|| snap_spread(gen, k_lo, k_hi, &free))
+    } else {
+        snap_spread(gen, k_lo, k_hi, &free)
+    };
+
+    let exponent = gen.shape.exponent();
+    let mut amplitudes: Vec<f64> = bins
+        .iter()
+        .map(|&k| (k as f64 * f0).powf(-exponent))
+        .collect();
+    let norm = amplitudes.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if norm > 0.0 {
+        for a in amplitudes.iter_mut() {
+            *a = *a / norm * gen.amplitude;
+        }
+    }
+
+    bins.into_iter()
+        .zip(amplitudes)
+        .map(|(k, a)| Tone::new(k as f64 * f0, a))
+        .collect()
+}
+
+/// Even spread across the band, snapped to the nearest free bin.
+fn snap_spread(gen: &Generator, k_lo: usize, k_hi: usize, free: &HashSet<usize>) -> Vec<usize> {
+    let count = gen.count.min(free.len().max(1));
+    let mut chosen: Vec<usize> = Vec::with_capacity(count);
+    let lo = k_lo as f64;
+    let hi = k_hi as f64;
+
+    for j in 0..count {
+        let f = if count == 1 {
+            0.0
+        } else {
+            j as f64 / (count - 1) as f64
+        };
+        let target = match gen.spacing {
+            Spacing::Logarithmic => lo * (hi / lo).powf(f),
+            Spacing::Linear => lo + (hi - lo) * f,
+        };
+        let pick = free
+            .iter()
+            .filter(|k| !chosen.contains(k))
+            .min_by(|a, b| {
+                let da = (**a as f64 - target).abs();
+                let db = (**b as f64 - target).abs();
+                da.partial_cmp(&db).unwrap().then(a.cmp(b))
+            })
+            .copied();
+        match pick {
+            Some(k) => chosen.push(k),
+            None => break,
+        }
+    }
+    chosen.sort_unstable();
+    chosen
 }
 
 /// One excitation input: a set of harmonic bins with amplitudes and phases.
@@ -279,8 +417,8 @@ pub struct Design {
     pub f0: f64,
     pub fs: f64,
     pub n_periods: usize,
-    pub bin_mode: BinMode,
-    pub bin_range: (usize, usize),
+    /// Things worth telling the user that are not worth refusing to build over.
+    pub warnings: Vec<String>,
 }
 
 impl Design {
@@ -296,14 +434,6 @@ impl Design {
         (self.fs / self.f0).round() as usize * self.n_periods
     }
 
-    /// Bins available inside the union of the requested bands.
-    pub fn available_bins(&self) -> usize {
-        let (lo, hi) = self.bin_range;
-        (lo..=hi)
-            .filter(|k| !self.bin_mode.is_odd() || k % 2 == 1)
-            .count()
-    }
-
     pub fn used_bins(&self) -> usize {
         self.channels.iter().map(|c| c.n_tones()).sum()
     }
@@ -312,269 +442,115 @@ impl Design {
     pub fn samples_per_period(&self) -> f64 {
         self.fs / self.f0
     }
+
+    pub fn nyquist(&self) -> f64 {
+        self.fs / 2.0
+    }
+
+    /// Tones at or above Nyquist, which will alias when sampled.
+    pub fn aliased_tones(&self) -> Vec<(String, f64)> {
+        let nyquist = self.nyquist();
+        let mut out = Vec::new();
+        for ch in &self.channels {
+            for f in ch.frequencies() {
+                if f >= nyquist {
+                    out.push((ch.name.clone(), f));
+                }
+            }
+        }
+        out
+    }
+
+    /// Bins used by more than one input. Sharing a bin means those inputs are not
+    /// separable from a single manoeuvre; it is still a legal signal.
+    pub fn shared_bins(&self) -> Vec<usize> {
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut shared: Vec<usize> = Vec::new();
+        for ch in &self.channels {
+            for &k in &ch.bins {
+                if !seen.insert(k) && !shared.contains(&k) {
+                    shared.push(k);
+                }
+            }
+        }
+        shared.sort_unstable();
+        shared
+    }
 }
 
-/// Ideal bin positions for one input, offset by index/n_inputs.
+/// Assemble a design from explicit per-input tone lists.
 ///
-/// The offset is what produces Morelli's interleave: when several inputs share a
-/// band, their target sets fall between one another rather than on top of one
-/// another, so the greedy assignment has little left to resolve.
-fn targets(
-    k_lo: usize,
-    k_hi: usize,
-    count: usize,
-    spacing: Spacing,
-    index: usize,
-    n_inputs: usize,
-) -> Vec<f64> {
-    if count == 1 {
-        return vec![k_lo as f64];
-    }
-    let n = n_inputs as f64;
-    let span = (count - 1) as f64 + (n - 1.0) / n;
-    let lo = k_lo as f64;
-    let hi = k_hi as f64;
-    (0..count)
-        .map(|j| {
-            let f = (j as f64 + index as f64 / n) / span;
-            match spacing {
-                Spacing::Logarithmic => lo * (hi / lo).powf(f),
-                Spacing::Linear => lo + (hi - lo) * f,
-            }
-        })
-        .collect()
-}
-
-/// Find the widest exact arithmetic bin progression that fits the free bins.
-///
-/// Worth searching for: an evenly spaced harmonic set optimises far better than a
-/// nearly-even one. Snapping ideal positions to the nearest free bin leaves spacings
-/// like 11,11,12,11 -- and measured over 8 tones that irregularity costs ~30% of RPF
-/// against a true arithmetic run. When several inputs share a band, each in turn
-/// finds a run offset from the others, which is Morelli's interleave exactly.
-fn arithmetic_run(
-    free: &HashSet<usize>,
-    k_lo: usize,
-    k_hi: usize,
-    count: usize,
-    odd_only: bool,
-) -> Option<Vec<usize>> {
-    if count == 1 {
-        return free.iter().min().map(|&k| vec![k]);
-    }
-    let step = if odd_only { 2 } else { 1 };
-    let widest = (k_hi - k_lo) / (count - 1);
-    // A run that cannot reach across the band is not worth having: covering 0.1-1 Hz
-    // when 0.1-2 Hz was asked for is a worse design than an unevenly spaced one.
-    let needed = 0.85 * (k_hi - k_lo) as f64;
-
-    let mut d = widest - widest % step;
-    while d >= step {
-        if (((count - 1) * d) as f64) < needed {
-            break;
-        }
-        let last_start = k_hi.saturating_sub((count - 1) * d);
-        for start in k_lo..=last_start {
-            let run: Vec<usize> = (0..count).map(|j| start + j * d).collect();
-            if run.iter().all(|k| free.contains(k)) {
-                return Some(run);
-            }
-        }
-        d -= step;
-    }
-    None
-}
-
-fn allocate_one(
-    order: &[usize],
-    specs: &[InputSpec],
-    ranges: &[(usize, usize)],
-    pools: &[Vec<usize>],
-    odd_only: bool,
-) -> Result<(Vec<Vec<usize>>, usize), DesignError> {
-    let mut used: HashSet<usize> = HashSet::new();
-    let mut allocated: Vec<Vec<usize>> = vec![Vec::new(); specs.len()];
-    let mut exact = 0usize;
-
-    for &i in order {
-        let spec = &specs[i];
-        let (k_lo, k_hi) = ranges[i];
-        let free: HashSet<usize> = pools[i]
-            .iter()
-            .copied()
-            .filter(|k| !used.contains(k))
-            .collect();
-
-        if free.len() >= spec.n_tones && spec.spacing != Spacing::Logarithmic {
-            if let Some(run) = arithmetic_run(&free, k_lo, k_hi, spec.n_tones, odd_only) {
-                used.extend(run.iter().copied());
-                allocated[i] = run;
-                exact += 1;
-                continue;
-            }
-        }
-        if free.len() < spec.n_tones {
-            return Err(design_err!(
-                "{}: wants {} tones but only {} free bins remain in {:.4}-{:.4} Hz{} -- \
-                 lengthen the record, widen this input's band, or use fewer tones",
-                spec.name,
-                spec.n_tones,
-                free.len(),
-                spec.f_min,
-                spec.f_max,
-                if odd_only {
-                    " (odd harmonics only)"
-                } else {
-                    ""
-                }
-            ));
-        }
-
-        let mut chosen: Vec<usize> = Vec::with_capacity(spec.n_tones);
-        for target in targets(k_lo, k_hi, spec.n_tones, spec.spacing, i, specs.len()) {
-            let pick = free
-                .iter()
-                .filter(|k| !chosen.contains(k))
-                .min_by(|a, b| {
-                    let da = (**a as f64 - target).abs();
-                    let db = (**b as f64 - target).abs();
-                    da.partial_cmp(&db).unwrap().then(a.cmp(b))
-                })
-                .copied();
-            match pick {
-                Some(k) => chosen.push(k),
-                None => break,
-            }
-        }
-        chosen.sort_unstable();
-        used.extend(chosen.iter().copied());
-        allocated[i] = chosen;
-    }
-
-    Ok((allocated, exact))
-}
-
-/// Assign each input a set of bins, mutually exclusive across inputs. Exclusivity is
-/// what keeps the inputs orthogonal over the record, so it holds even when the
-/// requested bands overlap.
-/// Bins assigned to each input, plus each input's (k_lo, k_hi) band in bin units.
-type Allocation = (Vec<Vec<usize>>, Vec<(usize, usize)>);
-
-fn allocate_bins(specs: &[InputSpec], f0: f64, odd_only: bool) -> Result<Allocation, DesignError> {
-    let mut ranges = Vec::with_capacity(specs.len());
-    let mut pools = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let k_lo = ((spec.f_min / f0).round() as usize).max(1);
-        let k_hi = (spec.f_max / f0).round() as usize;
-        if k_hi <= k_lo {
-            return Err(design_err!(
-                "{}: {:.4}-{:.4} Hz collapses into one bin at {:.4} Hz resolution -- \
-                 lengthen the record or widen the band",
-                spec.name,
-                spec.f_min,
-                spec.f_max,
-                f0
-            ));
-        }
-        ranges.push((k_lo, k_hi));
-        pools.push(
-            (k_lo..=k_hi)
-                .filter(|k| !odd_only || k % 2 == 1)
-                .collect::<Vec<usize>>(),
-        );
-    }
-
-    let n = specs.len();
-    // Order changes how many inputs get an exact arithmetic run: whoever is allocated
-    // first fragments the pool for everyone after. Most-constrained-first avoids
-    // starving a narrow-band input, but can spend the low bins on it and leave the
-    // wideband inputs with nothing evenly spaced. Try a few orders and keep the best.
-    let mut orders: Vec<Vec<usize>> = Vec::new();
-    let mut by_slack: Vec<usize> = (0..n).collect();
-    by_slack.sort_by_key(|&i| pools[i].len() as i64 - specs[i].n_tones as i64);
-    orders.push(by_slack);
-    let mut by_span: Vec<usize> = (0..n).collect();
-    by_span.sort_by_key(|&i| -((ranges[i].1 - ranges[i].0) as i64));
-    orders.push(by_span);
-    let mut by_tones: Vec<usize> = (0..n).collect();
-    by_tones.sort_by_key(|&i| -(specs[i].n_tones as i64));
-    orders.push(by_tones);
-
-    let mut best: Option<(Vec<Vec<usize>>, usize)> = None;
-    let mut failure: Option<DesignError> = None;
-    for order in &orders {
-        match allocate_one(order, specs, &ranges, &pools, odd_only) {
-            Ok((allocated, exact)) => {
-                let better = best.as_ref().map(|(_, e)| exact > *e).unwrap_or(true);
-                if better {
-                    best = Some((allocated, exact));
-                }
-                if exact == n {
-                    break;
-                }
-            }
-            Err(e) => {
-                if failure.is_none() {
-                    failure = Some(e);
-                }
-            }
-        }
-    }
-
-    match best {
-        Some((allocated, _)) => Ok((allocated, ranges)),
-        None => Err(failure.unwrap_or_else(|| design_err!("could not allocate bins"))),
-    }
-}
-
-/// Assemble a MIMO design from a list of `InputSpec`.
+/// Deliberately permissive: requested frequencies are snapped to the nearest
+/// harmonic of f0 and anything questionable is reported through `warnings` rather
+/// than refused. The only hard errors are structural -- no inputs, no tones, or a
+/// record length or sample rate that cannot describe a signal at all.
 pub fn build_design(
     specs: &[InputSpec],
     record_length: f64,
     n_periods: usize,
     fs: f64,
-    bin_mode: BinMode,
 ) -> Result<Design, DesignError> {
     if specs.is_empty() {
         return Err(design_err!("add at least one input"));
     }
-    if record_length <= 0.0 || fs <= 0.0 {
-        return Err(design_err!(
-            "record length and sample rate must be positive"
-        ));
+    if record_length <= 0.0 || !record_length.is_finite() {
+        return Err(design_err!("record length must be a positive number"));
+    }
+    if fs <= 0.0 || !fs.is_finite() {
+        return Err(design_err!("sample rate must be a positive number"));
     }
     if n_periods < 1 {
         return Err(design_err!("repeats must be at least one"));
     }
-    for spec in specs {
-        spec.validate()?;
-        if spec.f_max >= fs / 2.0 {
-            return Err(design_err!(
-                "{}: f max must stay below Nyquist ({:.4} Hz)",
-                spec.name,
-                fs / 2.0
-            ));
-        }
-    }
 
     let f0 = 1.0 / record_length;
-    let odd_only = bin_mode.is_odd();
-    let (allocated, ranges) = allocate_bins(specs, f0, odd_only)?;
-
+    let mut warnings: Vec<String> = Vec::new();
     let mut channels = Vec::with_capacity(specs.len());
-    for (spec, bins) in specs.iter().zip(allocated) {
-        let exponent = spec.shape.exponent();
-        let mut amplitudes: Vec<f64> = bins
-            .iter()
-            .map(|&k| (k as f64 * f0).powf(-exponent))
-            .collect();
-        let norm = amplitudes.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        if norm > 0.0 {
-            for a in amplitudes.iter_mut() {
-                *a /= norm;
-            }
+
+    for spec in specs {
+        if spec.tones.is_empty() {
+            return Err(design_err!("{}: add at least one tone", spec.name));
         }
-        // Schroeder start: already decent before any optimisation.
+
+        let mut bins: Vec<usize> = Vec::with_capacity(spec.tones.len());
+        let mut amplitudes: Vec<f64> = Vec::with_capacity(spec.tones.len());
+        let mut seen: HashSet<usize> = HashSet::new();
+
+        for tone in &spec.tones {
+            if tone.frequency <= 0.0 || !tone.frequency.is_finite() {
+                warnings.push(format!(
+                    "{}: skipped a tone with a non-positive frequency",
+                    spec.name
+                ));
+                continue;
+            }
+            let bin = ((tone.frequency / f0).round() as usize).max(1);
+            if !seen.insert(bin) {
+                // two requested frequencies landed on the same harmonic
+                warnings.push(format!(
+                    "{}: {:.4} Hz collides with another tone at bin {} ({:.4} Hz); \
+                     lengthen the record to separate them",
+                    spec.name,
+                    tone.frequency,
+                    bin,
+                    bin as f64 * f0
+                ));
+                continue;
+            }
+            bins.push(bin);
+            amplitudes.push(tone.amplitude);
+        }
+
+        if bins.is_empty() {
+            return Err(design_err!("{}: no usable tones", spec.name));
+        }
+
+        // keep bins ascending, carrying amplitudes with them
+        let mut order: Vec<usize> = (0..bins.len()).collect();
+        order.sort_by_key(|&i| bins[i]);
+        let bins: Vec<usize> = order.iter().map(|&i| bins[i]).collect();
+        let amplitudes: Vec<f64> = order.iter().map(|&i| amplitudes[i]).collect();
+
         let phases = schroeder_phases(&amplitudes);
         channels.push(Channel::new(
             spec.name.clone(),
@@ -586,15 +562,39 @@ pub fn build_design(
         ));
     }
 
-    let k_lo = ranges.iter().map(|r| r.0).min().unwrap();
-    let k_hi = ranges.iter().map(|r| r.1).max().unwrap();
-    Ok(Design {
+    let design = Design {
         channels,
         specs: specs.to_vec(),
         f0,
         fs,
         n_periods,
-        bin_mode,
-        bin_range: (k_lo, k_hi),
-    })
+        warnings: Vec::new(),
+    };
+
+    for (name, f) in design.aliased_tones() {
+        warnings.push(format!(
+            "{}: {:.4} Hz is at or above Nyquist ({:.4} Hz) and will alias",
+            name,
+            f,
+            design.nyquist()
+        ));
+    }
+    let shared = design.shared_bins();
+    if !shared.is_empty() {
+        warnings.push(format!(
+            "{} bin(s) are used by more than one input, so those inputs cannot be \
+             separated from a single manoeuvre",
+            shared.len()
+        ));
+    }
+    let per_period = design.samples_per_period();
+    if (per_period - per_period.round()).abs() > 1e-9 {
+        warnings.push(format!(
+            "sample rate / f0 = {:.3} is not a whole number, so repeats will not join \
+             seamlessly",
+            per_period
+        ));
+    }
+
+    Ok(Design { warnings, ..design })
 }

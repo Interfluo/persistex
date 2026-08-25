@@ -101,70 +101,161 @@ fn rng_matches_reference() {
     }
 }
 
-fn specs(n: usize, f_min: f64, f_max: f64, tones: usize) -> Vec<InputSpec> {
-    (0..n)
-        .map(|i| InputSpec {
-            name: format!("u{i}"),
-            f_min,
-            f_max,
-            n_tones: tones,
-            ..Default::default()
-        })
-        .collect()
+use std::collections::HashSet;
+
+fn gen(f_min: f64, f_max: f64, count: usize) -> Generator {
+    Generator {
+        f_min,
+        f_max,
+        count,
+        ..Default::default()
+    }
+}
+
+/// n inputs over the same band, each stepping around the bins already taken.
+fn specs(n: usize, f_min: f64, f_max: f64, count: usize, f0: f64) -> Vec<InputSpec> {
+    let mut taken: HashSet<usize> = HashSet::new();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let tones = generate_tones(&gen(f_min, f_max, count), f0, &taken);
+        for t in &tones {
+            taken.insert((t.frequency / f0).round() as usize);
+        }
+        out.push(InputSpec::with_tones(&format!("u{i}"), 1.0, tones));
+    }
+    out
 }
 
 #[test]
-fn bins_are_mutually_exclusive_and_span_the_band() {
-    for (n, f_min, f_max, tones) in [
+fn generated_tones_are_evenly_spaced_and_avoid_each_other() {
+    let f0 = 1.0 / 30.0;
+    for (n, f_min, f_max, count) in [
         (4usize, 0.1, 3.0, 8usize),
         (8, 0.3, 6.0, 5),
         (2, 0.2, 5.0, 20),
     ] {
-        let d = build_design(&specs(n, f_min, f_max, tones), 30.0, 2, 100.0, BinMode::All)
-            .expect("design");
+        let s = specs(n, f_min, f_max, count, f0);
+        let d = build_design(&s, 30.0, 2, 100.0).expect("design");
+
         let mut all: Vec<usize> = d.channels.iter().flat_map(|c| c.bins.clone()).collect();
-        let count = all.len();
+        let total = all.len();
         all.sort_unstable();
         all.dedup();
-        assert_eq!(all.len(), count, "bins collide across inputs");
+        assert_eq!(all.len(), total, "inputs share bins");
+        assert!(d.shared_bins().is_empty());
 
         // an evenly spaced harmonic set optimises far better than a nearly-even one
         for ch in &d.channels {
             let steps: Vec<usize> = ch.bins.windows(2).map(|w| w[1] - w[0]).collect();
-            let uniform = steps.windows(2).all(|w| w[0] == w[1]);
             assert!(
-                uniform,
-                "{} did not get an arithmetic run: {:?}",
-                ch.name, ch.bins
+                steps.windows(2).all(|w| w[0] == w[1]),
+                "{} is not an arithmetic run: {:?}",
+                ch.name,
+                ch.bins
             );
         }
-        let (lo, hi) = d.bin_range;
-        let covered = d
-            .channels
-            .iter()
-            .map(|c| *c.bins.last().unwrap())
-            .max()
-            .unwrap()
-            - d.channels.iter().map(|c| c.bins[0]).min().unwrap();
-        assert!(
-            covered as f64 >= 0.85 * (hi - lo) as f64,
-            "allocation covers only {covered} of {}",
-            hi - lo
-        );
     }
 }
 
 #[test]
-fn odd_harmonics_stay_odd() {
-    let d = build_design(&specs(2, 0.1, 3.0, 8), 30.0, 2, 100.0, BinMode::Odd).unwrap();
-    for ch in &d.channels {
-        assert!(ch.bins.iter().all(|k| k % 2 == 1), "{:?}", ch.bins);
+fn odd_only_generation_stays_odd() {
+    let f0 = 1.0 / 30.0;
+    let g = Generator {
+        odd_only: true,
+        ..gen(0.1, 3.0, 8)
+    };
+    let tones = generate_tones(&g, f0, &HashSet::new());
+    assert_eq!(tones.len(), 8);
+    for t in &tones {
+        assert_eq!((t.frequency / f0).round() as usize % 2, 1);
     }
+}
+
+#[test]
+fn shaped_generation_scales_amplitudes() {
+    let f0 = 1.0 / 30.0;
+    let g = Generator {
+        shape: Shape::InvF,
+        amplitude: 0.5,
+        ..gen(0.1, 3.0, 6)
+    };
+    let tones = generate_tones(&g, f0, &HashSet::new());
+    let peak = tones.iter().map(|t| t.amplitude).fold(0.0f64, f64::max);
+    assert!((peak - 0.5).abs() < 1e-12, "peak amplitude {peak}");
+    // 1/f means amplitude falls as frequency rises
+    for w in tones.windows(2) {
+        assert!(w[1].amplitude < w[0].amplitude);
+    }
+}
+
+#[test]
+fn tones_are_taken_as_given() {
+    // an arbitrary, deliberately uneven set: nothing should be rearranged or refused
+    let wanted = [0.37, 0.9, 1.13, 2.7, 4.02];
+    let spec = InputSpec::with_tones(
+        "ail",
+        1.0,
+        wanted.iter().map(|&f| Tone::new(f, 1.0)).collect(),
+    );
+    let d = build_design(&[spec], 30.0, 2, 100.0).unwrap();
+    let got = d.channels[0].frequencies();
+    assert_eq!(got.len(), wanted.len());
+    for (g, w) in got.iter().zip(wanted) {
+        // snapped to the nearest harmonic of f0 = 1/30 Hz, so within half a bin
+        assert!((g - w).abs() <= 0.5 / 30.0 + 1e-9, "{g} vs {w}");
+    }
+}
+
+#[test]
+fn period_round_trips_with_frequency() {
+    let t = Tone::new(0.25, 1.0);
+    assert!((t.period() - 4.0).abs() < 1e-12);
+    assert!((Tone::new(1.0 / t.period(), 1.0).frequency - 0.25).abs() < 1e-12);
+}
+
+#[test]
+fn questionable_designs_warn_rather_than_fail() {
+    // above Nyquist: allowed, but said so
+    let spec = InputSpec::with_tones("fast", 1.0, vec![Tone::new(80.0, 1.0)]);
+    let d = build_design(&[spec], 30.0, 2, 100.0).expect("must still build");
+    assert!(
+        d.warnings.iter().any(|w| w.contains("Nyquist")),
+        "{:?}",
+        d.warnings
+    );
+    assert_eq!(d.aliased_tones().len(), 1);
+
+    // two inputs sharing a bin: legal signal, not separable
+    let a = InputSpec::with_tones("a", 1.0, vec![Tone::new(1.0, 1.0)]);
+    let b = InputSpec::with_tones("b", 1.0, vec![Tone::new(1.0, 1.0)]);
+    let d = build_design(&[a, b], 30.0, 2, 100.0).unwrap();
+    assert_eq!(d.shared_bins(), vec![30]);
+    assert!(d.warnings.iter().any(|w| w.contains("more than one input")));
+
+    // a record length that does not divide the sample rate (100 * 7.305 = 730.5)
+    let s = InputSpec::with_tones("a", 1.0, vec![Tone::new(1.0, 1.0)]);
+    let d = build_design(&[s], 7.305, 2, 100.0).unwrap();
+    assert!(
+        d.warnings.iter().any(|w| w.contains("seamlessly")),
+        "{:?}",
+        d.warnings
+    );
+}
+
+#[test]
+fn only_structural_problems_are_errors() {
+    assert!(build_design(&[], 30.0, 2, 100.0).is_err());
+    let empty = InputSpec::with_tones("a", 1.0, vec![]);
+    let err = build_design(&[empty], 30.0, 2, 100.0).unwrap_err();
+    assert!(err.to_string().contains("at least one tone"), "{err}");
+    let s = InputSpec::with_tones("a", 1.0, vec![Tone::new(1.0, 1.0)]);
+    assert!(build_design(std::slice::from_ref(&s), 0.0, 2, 100.0).is_err());
+    assert!(build_design(&[s], 30.0, 2, 0.0).is_err());
 }
 
 #[test]
 fn optimisation_lowers_rpf_and_respects_peak_limits() {
-    let mut d = build_design(&specs(3, 0.1, 3.0, 10), 30.0, 2, 100.0, BinMode::All).unwrap();
+    let mut d = build_design(&specs(3, 0.1, 3.0, 10, 1.0 / 30.0), 30.0, 2, 100.0).unwrap();
     let before: Vec<f64> = (0..3).map(|i| d.channels[i].rpf()).collect();
     let no_cancel = || false;
     let reports = optimize_design(&mut d, Effort::Standard, None, &no_cancel, &mut Silent);
@@ -191,7 +282,7 @@ fn optimisation_lowers_rpf_and_respects_peak_limits() {
 
 #[test]
 fn optimising_one_channel_leaves_the_others_alone() {
-    let mut d = build_design(&specs(3, 0.1, 3.0, 10), 30.0, 2, 100.0, BinMode::All).unwrap();
+    let mut d = build_design(&specs(3, 0.1, 3.0, 10, 1.0 / 30.0), 30.0, 2, 100.0).unwrap();
     let untouched: Vec<Vec<f64>> = d.channels.iter().map(|c| c.phases.clone()).collect();
     let no_cancel = || false;
     optimize_design(&mut d, Effort::Fast, Some(&[1]), &no_cancel, &mut Silent);
@@ -202,58 +293,38 @@ fn optimising_one_channel_leaves_the_others_alone() {
 
 #[test]
 fn heterogeneous_inputs_are_allowed() {
-    let specs = vec![
-        InputSpec {
-            name: "ail".into(),
-            f_min: 0.1,
-            f_max: 3.0,
-            n_tones: 10,
-            ..Default::default()
-        },
-        InputSpec {
-            name: "rud".into(),
-            f_min: 0.5,
-            f_max: 8.0,
-            n_tones: 6,
-            peak_limit: 0.5,
-            spacing: Spacing::Logarithmic,
-            shape: Shape::InvF,
-        },
-        InputSpec {
-            name: "thr".into(),
-            f_min: 0.05,
-            f_max: 1.0,
-            n_tones: 12,
-            peak_limit: 0.35,
-            ..Default::default()
-        },
-    ];
-    let d = build_design(&specs, 30.0, 2, 100.0, BinMode::All).unwrap();
+    let f0 = 1.0 / 30.0;
+    let mut taken: HashSet<usize> = HashSet::new();
+    let mut specs = Vec::new();
+    for (name, peak, g) in [
+        ("ail", 1.0, gen(0.1, 3.0, 10)),
+        (
+            "rud",
+            0.5,
+            Generator {
+                spacing: Spacing::Logarithmic,
+                shape: Shape::InvF,
+                ..gen(0.5, 8.0, 6)
+            },
+        ),
+        ("thr", 0.35, gen(0.05, 1.0, 12)),
+    ] {
+        let tones = generate_tones(&g, f0, &taken);
+        for t in &tones {
+            taken.insert((t.frequency / f0).round() as usize);
+        }
+        specs.push(InputSpec::with_tones(name, peak, tones));
+    }
+
+    let d = build_design(&specs, 30.0, 2, 100.0).unwrap();
     assert_eq!(d.channels.len(), 3);
-    let mut all: Vec<usize> = d.channels.iter().flat_map(|c| c.bins.clone()).collect();
-    let count = all.len();
-    all.sort_unstable();
-    all.dedup();
-    assert_eq!(all.len(), count);
-}
-
-#[test]
-fn errors_name_the_offending_input() {
-    let mut s = specs(2, 0.1, 3.0, 10);
-    s[1].n_tones = 900;
-    s[1].name = "elevator".into();
-    let err = build_design(&s, 30.0, 2, 100.0, BinMode::All).unwrap_err();
-    assert!(err.to_string().contains("elevator"), "{err}");
-
-    let mut s = specs(1, 0.1, 3.0, 10);
-    s[0].f_max = 400.0;
-    let err = build_design(&s, 30.0, 2, 100.0, BinMode::All).unwrap_err();
-    assert!(err.to_string().contains("Nyquist"), "{err}");
+    assert!(d.shared_bins().is_empty());
+    assert!((d.channels[1].peak_limit - 0.5).abs() < 1e-12);
 }
 
 #[test]
 fn grids_are_powers_of_two() {
-    let d = build_design(&specs(2, 0.1, 8.0, 10), 30.0, 2, 100.0, BinMode::All).unwrap();
+    let d = build_design(&specs(2, 0.1, 8.0, 10, 1.0 / 30.0), 30.0, 2, 100.0).unwrap();
     for ch in &d.channels {
         assert!(ch.grid_size().is_power_of_two());
         assert!(ch.measure_grid().is_power_of_two());
@@ -264,7 +335,7 @@ fn grids_are_powers_of_two() {
 
 #[test]
 fn artifact_hash_covers_the_document() {
-    let mut d = build_design(&specs(2, 0.1, 3.0, 8), 30.0, 2, 100.0, BinMode::All).unwrap();
+    let mut d = build_design(&specs(2, 0.1, 3.0, 8, 1.0 / 30.0), 30.0, 2, 100.0).unwrap();
     let json = persistex_core::export::artifact_json(&mut d, "2026-01-01T00:00:00Z");
     assert!(json.contains("\"format\":\"persistex.excitation\""));
     let marker = ", \"sha256\": \"";
