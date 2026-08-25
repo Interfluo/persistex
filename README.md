@@ -80,6 +80,19 @@ landing on the same harmonic, a record length that does not divide the sample
 rate -- all of these are reported in the side panel and, for Nyquist, again when
 exporting a CSV. None of them stop you building the signal.
 
+### Reading the plots
+
+The spectrum switches to a **log frequency axis** when the tones would otherwise
+crowd against the left edge. The decision is made on the closest pair, not the
+decade span, so a deliberately even set keeps its linear axis where the spacing is
+visible. The checkbox next to the tab overrides it either way.
+
+Dense traces render as a min/max envelope rather than a polyline, since a polyline
+below a few pixels per cycle is a moire mess. That choice follows the bandwidth
+carrying 90% of the amplitude, not the highest tone -- a 1/f set's top tone can be
+a few percent of amplitude and should not by itself turn a smooth trace into a
+filled band.
+
 ### RPF
 
 Morelli's relative peak factor, `(max u − min u) / (2√2 · rms(u))` — the crest

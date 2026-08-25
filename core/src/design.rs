@@ -330,6 +330,29 @@ impl Channel {
         self.cache = None;
     }
 
+    /// The bin below which `fraction` of the total amplitude sits.
+    ///
+    /// Drawing decisions should follow this rather than the highest bin: a 1/f set
+    /// can carry a top tone at a few percent amplitude, which contributes almost
+    /// nothing to how the trace looks but would otherwise drag the whole plot into
+    /// an envelope rendering.
+    pub fn bandwidth_bin(&self, fraction: f64) -> usize {
+        let total: f64 = self.amplitudes.iter().map(|a| a.abs()).sum();
+        if total <= 0.0 {
+            return *self.bins.iter().max().unwrap_or(&1);
+        }
+        let mut order: Vec<usize> = (0..self.bins.len()).collect();
+        order.sort_by_key(|&i| self.bins[i]);
+        let mut running = 0.0;
+        for &i in &order {
+            running += self.amplitudes[i].abs();
+            if running >= fraction * total {
+                return self.bins[i];
+            }
+        }
+        *self.bins.iter().max().unwrap_or(&1)
+    }
+
     /// Optimisation grid: decoupled from the output rate, sized to resolve the peak.
     pub fn grid_size(&self) -> usize {
         let k_max = *self.bins.iter().max().unwrap_or(&1);

@@ -60,6 +60,29 @@ pub fn decimate(values: &[f64], columns: usize, force_band: bool) -> Trace {
     Trace::Line(out)
 }
 
+/// 1-2-5 ticks per decade, for a log axis.
+pub fn log_ticks(lo: f64, hi: f64) -> Vec<f64> {
+    if lo <= 0.0 || hi <= lo || !lo.is_finite() || !hi.is_finite() {
+        return vec![lo];
+    }
+    let mut ticks = Vec::new();
+    let first = lo.log10().floor() as i32;
+    let last = hi.log10().ceil() as i32;
+    for decade in first..=last {
+        let base = 10f64.powi(decade);
+        for m in [1.0, 2.0, 5.0] {
+            let v = m * base;
+            if v >= lo * 0.999 && v <= hi * 1.001 {
+                ticks.push(v);
+            }
+        }
+    }
+    if ticks.is_empty() {
+        ticks.push(lo);
+    }
+    ticks
+}
+
 pub fn nice_ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
     if hi <= lo || !hi.is_finite() || !lo.is_finite() {
         return vec![lo];
@@ -82,6 +105,16 @@ pub fn nice_ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
     ticks
 }
 
+/// Log-axis labels: significant digits vary by decade, so format per value.
+pub fn format_log_tick(value: f64) -> String {
+    if value >= 1.0 {
+        format!("{}", value)
+    } else {
+        let decimals = (-value.log10().floor()) as usize;
+        format!("{:.*}", decimals.min(6), value)
+    }
+}
+
 pub fn format_tick(value: f64, step: f64) -> String {
     if step >= 1000.0 || (value != 0.0 && value.abs() < 0.001) {
         return format!("{}", value);
@@ -102,6 +135,9 @@ pub struct Axes<'a> {
     pub xhi: f64,
     pub ylo: f64,
     pub yhi: f64,
+    /// Map x logarithmically. A linear frequency axis is unreadable once the tones
+    /// span more than a decade -- they pile up against the left edge.
+    pub log_x: bool,
 }
 
 impl<'a> Axes<'a> {
@@ -121,11 +157,27 @@ impl<'a> Axes<'a> {
             xhi,
             ylo,
             yhi,
+            log_x: false,
         }
     }
 
+    pub fn with_log_x(mut self, log_x: bool) -> Self {
+        if log_x && self.xlo <= 0.0 {
+            self.xlo = self.xhi / 1000.0;
+        }
+        self.log_x = log_x;
+        self
+    }
+
     pub fn px(&self, x: f64) -> f32 {
-        self.rect.left() + ((x - self.xlo) / (self.xhi - self.xlo)) as f32 * self.rect.width()
+        let f = if self.log_x {
+            let lo = self.xlo.max(1e-12).log10();
+            let hi = self.xhi.max(1e-12).log10();
+            (x.max(1e-12).log10() - lo) / (hi - lo).max(1e-12)
+        } else {
+            (x - self.xlo) / (self.xhi - self.xlo)
+        };
+        self.rect.left() + f as f32 * self.rect.width()
     }
 
     pub fn py(&self, y: f64) -> f32 {
@@ -145,7 +197,11 @@ impl<'a> Axes<'a> {
     ) {
         self.painter.rect_filled(self.rect, 0.0, PANEL);
 
-        let ticks = nice_ticks(self.xlo, self.xhi, n_x);
+        let ticks = if self.log_x {
+            log_ticks(self.xlo, self.xhi)
+        } else {
+            nice_ticks(self.xlo, self.xhi, n_x)
+        };
         let step = if ticks.len() > 1 {
             ticks[1] - ticks[0]
         } else {
@@ -164,7 +220,11 @@ impl<'a> Axes<'a> {
                 self.painter.text(
                     Pos2::new(x, self.rect.bottom() + 4.0),
                     Align2::CENTER_TOP,
-                    format_tick(*t, step),
+                    if self.log_x {
+                        format_log_tick(*t)
+                    } else {
+                        format_tick(*t, step)
+                    },
                     FontId::proportional(SIZE_SMALL),
                     MUTED,
                 );

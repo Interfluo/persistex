@@ -3,6 +3,25 @@
 Excitation signal design and system identification for generic UAS
 (multirotor / fixed-wing / hybrid transition vehicles).
 
+## Plot fixes for log-spaced designs (2026-08-24)
+
+Two rendering bugs, both from using the *highest* tone as a proxy for what a plot
+needs to show:
+
+- **The spectrum used a linear frequency axis.** A 20-tone log set over 0.05-8 Hz
+  put 8 stems inside the leftmost 5% of the plot, 3.5px apart against a 3px dot
+  radius -- a smear. Now switches to a log axis, decided on the **closest pair**
+  rather than the decade span, so an evenly spaced linear set keeps the linear
+  axis where its spacing is legible. Measured against a nominal width so the axis
+  does not flip while the window is resized; the checkbox overrides.
+- **The envelope-vs-polyline choice keyed off `k_max`.** A 1/f set with its top
+  tone at ~6% amplitude was drawn as a filled band even though the waveform is
+  visibly smooth. Now keys off `Channel::bandwidth_bin(0.9)`, the bin below which
+  90% of the amplitude sits.
+
+Both are pinned by tests. The general lesson: what a plot needs is driven by the
+content that carries the energy, not by the extreme of the range.
+
 ## Per-tone specification (2026-08-24)
 
 Replaced the band+count+spacing input model with **explicit per-tone lists**. Each

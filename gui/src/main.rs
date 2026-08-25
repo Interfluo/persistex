@@ -189,6 +189,8 @@ pub struct App {
     dirty: bool,
     /// Which input's tone editor is open, if any.
     pub editing: Option<usize>,
+    /// Log frequency axis. None follows the design's own spread.
+    pub log_freq: Option<bool>,
 }
 
 impl Default for App {
@@ -232,6 +234,7 @@ impl Default for App {
             tab: 0,
             dirty: true,
             editing: None,
+            log_freq: None,
         }
     }
 }
@@ -471,6 +474,17 @@ impl App {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, 0, "  Time domain  ");
                 ui.selectable_value(&mut self.tab, 1, "  Spectrum  ");
+                if self.tab == 1 {
+                    ui.add_space(12.0);
+                    let mut log_x = self.log_freq_active();
+                    if ui
+                        .checkbox(&mut log_x, "log frequency")
+                        .on_hover_text("Defaults on when the tones span more than a decade")
+                        .changed()
+                    {
+                        self.log_freq = Some(log_x);
+                    }
+                }
             });
             ui.add_space(4.0);
             let size = ui.available_size();
@@ -728,7 +742,7 @@ impl App {
             })
             .collect();
 
-        for (index, (name, peak_limit, k_max)) in channels.iter().enumerate() {
+        for (index, (name, peak_limit, k_visible)) in channels.iter().enumerate() {
             let y0 = rect.top() + top + index as f32 * strip;
             let y1 = y0 + strip - 12.0;
             let plot = Rect::from_min_max(
@@ -759,7 +773,7 @@ impl App {
             if signal.len() > 1 {
                 let columns = plot.width().max(60.0) as usize;
                 // cycles, not samples, decide whether a polyline can still be read
-                let cycles = k_max * periods;
+                let cycles = k_visible * periods;
                 let scale = duration / (signal.len() - 1) as f64;
                 match decimate(&signal, columns, (cycles as f64) * 2.5 > columns as f64) {
                     Trace::Line(points) => {
@@ -813,8 +827,48 @@ impl App {
         );
     }
 
+    /// Whether a linear frequency axis would crowd the stems together.
+    ///
+    /// Decided on the closest pair rather than the decade span, so a deliberately
+    /// linear set stays on a linear axis where its even spacing is visible, and only
+    /// genuinely bunched sets switch. Measured against a nominal width so the axis
+    /// does not flip while the window is resized.
+    pub fn log_freq_default(&self) -> bool {
+        const NOMINAL_WIDTH: f64 = 800.0;
+        const MIN_GAP_PX: f64 = 10.0;
+
+        let Some(design) = self.design.as_ref() else {
+            return false;
+        };
+        let mut all: Vec<f64> = design
+            .channels
+            .iter()
+            .flat_map(|c| c.frequencies())
+            .filter(|f| *f > 0.0)
+            .collect();
+        if all.len() < 2 {
+            return false;
+        }
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (lo, hi) = (all[0], all[all.len() - 1]);
+        let span = hi - lo;
+        if span <= 0.0 {
+            return false;
+        }
+        let closest = all
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .fold(f64::INFINITY, f64::min);
+        closest / span * NOMINAL_WIDTH < MIN_GAP_PX
+    }
+
+    pub fn log_freq_active(&self) -> bool {
+        self.log_freq.unwrap_or_else(|| self.log_freq_default())
+    }
+
     fn draw_spectrum(&mut self, painter: &egui::Painter, rect: Rect) {
         painter.rect_filled(rect, 0.0, BG);
+        let log_x = self.log_freq_active();
         let Some(design) = self.design.as_mut() else {
             return;
         };
@@ -840,18 +894,19 @@ impl App {
             .iter()
             .map(|(_, f, _)| f[f.len() - 1])
             .fold(f64::NEG_INFINITY, f64::max);
-        let span = (f_hi - f_lo).max(1e-9);
 
         let plot = Rect::from_min_max(
             Pos2::new(rect.left() + 70.0, rect.top() + 18.0),
             Pos2::new(rect.right() - 22.0, rect.bottom() - 40.0),
         );
-        let axes = Axes::new(
-            painter,
-            plot,
-            ((f_lo - span * 0.06).max(0.0), f_hi + span * 0.06),
-            (0.0, peak * 1.2),
-        );
+        // pad multiplicatively on a log axis, additively on a linear one
+        let xlim = if log_x {
+            (f_lo / 1.25, f_hi * 1.25)
+        } else {
+            let span = (f_hi - f_lo).max(1e-9);
+            ((f_lo - span * 0.06).max(0.0), f_hi + span * 0.06)
+        };
+        let axes = Axes::new(painter, plot, xlim, (0.0, peak * 1.2)).with_log_x(log_x);
         axes.frame(true, true, 6, 4, false, true, true);
 
         for (index, (_, f, a)) in series_data.iter().enumerate() {
@@ -862,7 +917,11 @@ impl App {
             painter,
             Pos2::new(rect.center().x, rect.bottom() - 14.0),
             Align2::CENTER_CENTER,
-            "frequency (Hz)",
+            if log_x {
+                "frequency (Hz, log)"
+            } else {
+                "frequency (Hz)"
+            },
             SIZE_SMALL,
             MUTED,
         );
@@ -933,6 +992,7 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use persistex_core::design::{generate_tones, Generator, Shape, Spacing};
 
     /// Drives the full UI tree without a window, which catches layout panics and
     /// widget id collisions that only surface once every branch is rendered.
@@ -1069,6 +1129,99 @@ mod tests {
         app.mark_dirty();
         run(&mut app, 2);
         assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    fn only_input(app: &mut App, g: Generator) {
+        let f0 = 1.0 / 30.0;
+        let tones = generate_tones(&g, f0, &HashSet::new());
+        app.rows.truncate(1);
+        app.rows[0].tones = tones.iter().map(ToneRow::from_tone).collect();
+        app.mark_dirty();
+    }
+
+    #[test]
+    fn crowded_spectra_switch_to_a_log_axis_and_even_ones_do_not() {
+        let log = Generator {
+            f_min: 0.05,
+            f_max: 8.0,
+            count: 20,
+            spacing: Spacing::Logarithmic,
+            ..Default::default()
+        };
+        let mut app = App::default();
+        only_input(&mut app, log);
+        run(&mut app, 2);
+        assert!(app.log_freq_active(), "bunched tones need a log axis");
+
+        // a deliberately even set keeps its linear axis, where the spacing shows
+        let mut app = App::default();
+        only_input(
+            &mut app,
+            Generator {
+                f_min: 0.1,
+                f_max: 3.0,
+                count: 10,
+                ..Default::default()
+            },
+        );
+        run(&mut app, 2);
+        assert!(!app.log_freq_active(), "even spacing should stay linear");
+
+        // and the user's choice always wins
+        app.log_freq = Some(true);
+        assert!(app.log_freq_active());
+    }
+
+    #[test]
+    fn a_faint_top_tone_does_not_force_the_envelope() {
+        // 1/f over 0.5-8 Hz: the top tone is ~6% amplitude and contributes almost
+        // nothing visually, but by bin alone it would drag the trace into a band
+        let mut app = App::default();
+        only_input(
+            &mut app,
+            Generator {
+                f_min: 0.5,
+                f_max: 8.0,
+                count: 6,
+                spacing: Spacing::Logarithmic,
+                shape: Shape::InvF,
+                ..Default::default()
+            },
+        );
+        run(&mut app, 2);
+        let d = app.design.as_ref().unwrap();
+        let ch = &d.channels[0];
+        let k_max = *ch.bins.iter().max().unwrap();
+        let k_visible = ch.bandwidth_bin(0.9);
+        assert!(k_visible < k_max / 2, "{k_visible} vs {k_max}");
+
+        let columns = 900usize;
+        let force = (k_visible * d.n_periods) as f64 * 2.5 > columns as f64;
+        assert!(!force, "should draw as a line");
+        let signal = app.trace(0, 1.0, d.n_periods);
+        assert!(matches!(decimate(&signal, columns, force), Trace::Line(_)));
+    }
+
+    #[test]
+    fn a_genuinely_dense_trace_still_uses_the_envelope() {
+        let mut app = App::default();
+        only_input(
+            &mut app,
+            Generator {
+                f_min: 4.0,
+                f_max: 12.0,
+                count: 8,
+                ..Default::default()
+            },
+        );
+        run(&mut app, 2);
+        let d = app.design.as_ref().unwrap();
+        let k_visible = d.channels[0].bandwidth_bin(0.9);
+        let columns = 900usize;
+        let force = (k_visible * d.n_periods) as f64 * 2.5 > columns as f64;
+        assert!(force, "12 Hz over 60 s cannot be drawn as a polyline");
+        let signal = app.trace(0, 1.0, d.n_periods);
+        assert!(matches!(decimate(&signal, columns, force), Trace::Band(_)));
     }
 
     #[test]
