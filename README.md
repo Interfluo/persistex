@@ -82,6 +82,16 @@ exporting a CSV. None of them stop you building the signal.
 
 ### Reading the plots
 
+**Scroll to zoom, drag to pan, double-click to fit.** This is not a nicety: any
+realistic design is dense at full width. A 3 Hz tone over a 60 s record is 180
+cycles, which is a picket fence at any sane plot size, so seeing the actual
+waveform means zooming in. Only the visible window is drawn, so zooming buys real
+resolution rather than just stretching pixels.
+
+Defaults are chosen to open on something readable -- one 20 s record, six tones
+per input, 0.1-2 Hz -- rather than on a design that looks like noise.
+
+
 The spectrum switches to a **log frequency axis** when the tones would otherwise
 crowd against the left edge. The decision is made on the closest pair, not the
 decade span, so a deliberately even set keeps its linear axis where the spacing is

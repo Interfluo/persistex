@@ -265,8 +265,8 @@ impl Default for GeneratorRow {
     fn default() -> Self {
         GeneratorRow {
             f_min: "0.1".into(),
-            f_max: "3".into(),
-            count: "10".into(),
+            f_max: "2".into(),
+            count: "6".into(),
             amplitude: "1".into(),
             spacing: Spacing::Linear,
             shape: Shape::Flat,

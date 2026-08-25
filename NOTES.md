@@ -3,6 +3,32 @@
 Excitation signal design and system identification for generic UAS
 (multirotor / fixed-wing / hybrid transition vehicles).
 
+## The time plot needed zoom, not a better heuristic (2026-08-24)
+
+Chasing "the rendering looks funky" through two rounds of threshold tuning was
+the wrong approach. Tessellating the real UI headlessly and rasterising the
+triangles (see the ignored `dump_ui` test in `gui/src/main.rs`) showed the actual
+problem immediately: **the default design put 180 cycles across ~1000 px**, about
+5 px per cycle, so the trace was a picket fence. No polyline-versus-envelope
+threshold fixes that, because the density is real.
+
+Two changes:
+
+- **Zoom and pan on the time axis.** Scroll zooms about the cursor, drag pans,
+  double-click fits. Only the visible window is drawn and the envelope decision is
+  made on cycles across *that* window, so zooming buys resolution. Any realistic
+  design -- a 3 Hz tone over 60 s is 180 cycles -- is dense at full width, so this
+  is what makes the trace readable at all.
+- **Defaults sized to open on something legible**: one 20 s record, six tones per
+  input, 0.1-2 Hz, giving ~27 px/cycle. A test asserts the default stays above
+  15 px/cycle so this cannot silently regress.
+
+`POINT_BUDGET` also dropped from 4 to 2 points per pixel: sub-pixel segments are
+near-degenerate and egui's tessellator beads the stroke.
+
+**Keep `dump_ui`.** Being able to see what is actually drawn, without a window or
+a screenshot, is what turned this from guesswork into a five-minute diagnosis.
+
 ## Plot fixes for log-spaced designs (2026-08-24)
 
 Two rendering bugs, both from using the *highest* tone as a proxy for what a plot

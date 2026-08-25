@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use theme::*;
+
+/// Opening record length, in seconds.
+pub const DEFAULT_RECORD: f64 = 20.0;
 use tones::GeneratorRow;
 
 /// One tone as edited: frequency and period are kept in step, either may be typed.
@@ -191,12 +194,16 @@ pub struct App {
     pub editing: Option<usize>,
     /// Log frequency axis. None follows the design's own spread.
     pub log_freq: Option<bool>,
+    /// Visible time window (start, span) in seconds. None shows the whole record.
+    pub time_view: Option<(f64, f64)>,
 }
 
 impl Default for App {
     fn default() -> Self {
-        // two inputs interleaved over the same band, as a starting point
-        let f0 = 1.0 / 30.0;
+        // Two inputs interleaved over the same band. Kept deliberately small: a
+        // 3 Hz tone over 60 s is 180 cycles, which is a picket fence at any sane
+        // plot width, so the opening view is one 20 s record of six tones.
+        let f0 = 1.0 / DEFAULT_RECORD;
         let mut taken: HashSet<usize> = HashSet::new();
         let mut rows = Vec::new();
         for name in ["ail", "ele"] {
@@ -216,8 +223,8 @@ impl Default for App {
         }
         App {
             rows,
-            record: "30".into(),
-            repeats: "2".into(),
+            record: fmt(DEFAULT_RECORD),
+            repeats: "1".into(),
             fs: "100".into(),
             effort: Effort::Standard,
             design: None,
@@ -235,6 +242,7 @@ impl Default for App {
             dirty: true,
             editing: None,
             log_freq: None,
+            time_view: None,
         }
     }
 }
@@ -275,6 +283,7 @@ impl App {
                 self.design = Some(design);
                 self.error = None;
                 self.previews.clear();
+                self.time_view = None;
                 let n = self.design.as_ref().unwrap().channels.len();
                 let tones = self.design.as_ref().unwrap().used_bins();
                 self.refresh();
@@ -430,6 +439,60 @@ impl App {
         }
     }
 
+    /// Visible time window, clamped to the record.
+    fn time_window(&self, duration: f64) -> (f64, f64) {
+        match self.time_view {
+            Some((start, span)) => {
+                let span = span.clamp(duration * 1e-4, duration);
+                let start = start.clamp(0.0, (duration - span).max(0.0));
+                (start, start + span)
+            }
+            None => (0.0, duration),
+        }
+    }
+
+    /// Scroll to zoom about the cursor, drag to pan, double-click to fit.
+    ///
+    /// A realistic design is dense at full width -- a 3 Hz tone over 60 s is 180
+    /// cycles -- so being able to zoom in is what makes the trace readable at all.
+    fn handle_time_input(&mut self, ui: &egui::Ui, response: &egui::Response, rect: Rect) {
+        let Some(design) = self.design.as_ref() else {
+            return;
+        };
+        let duration = design.duration();
+        if duration <= 0.0 {
+            return;
+        }
+        let (left, right) = (92.0f32, 22.0f32);
+        let plot_w = (rect.width() - left - right).max(1.0);
+        let plot_x0 = rect.left() + left;
+        let (start, end) = self.time_window(duration);
+        let span = end - start;
+
+        if response.double_clicked() {
+            self.time_view = None;
+            return;
+        }
+        if response.dragged() {
+            let dx = response.drag_delta().x as f64 / plot_w as f64 * span;
+            self.time_view = Some((start - dx, span));
+            return;
+        }
+
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 && response.hovered() {
+            let factor = (1.0f64 - scroll as f64 * 0.004).clamp(0.2, 5.0);
+            let new_span = (span * factor).clamp(duration * 1e-4, duration);
+            // keep whatever is under the cursor pinned
+            let anchor = match response.hover_pos() {
+                Some(p) => (((p.x - plot_x0) as f64) / plot_w as f64).clamp(0.0, 1.0),
+                None => 0.5,
+            };
+            let focus = start + anchor * span;
+            self.time_view = Some((focus - anchor * new_span, new_span));
+        }
+    }
+
     /// The samples to draw: the live preview while optimising, else the record.
     fn trace(&self, index: usize, peak_limit: f64, n_periods: usize) -> Vec<f64> {
         if let Some((period, _)) = self.previews.get(&index) {
@@ -488,9 +551,11 @@ impl App {
             });
             ui.add_space(4.0);
             let size = ui.available_size();
-            let (_id, rect) = ui.allocate_space(size);
+            let response = ui.allocate_response(size, egui::Sense::click_and_drag());
+            let rect = response.rect;
             let painter = ui.painter_at(rect);
             if self.tab == 0 {
+                self.handle_time_input(ui, &response, rect);
                 self.draw_time(&painter, rect);
             } else {
                 self.draw_spectrum(&painter, rect);
@@ -729,6 +794,8 @@ impl App {
         let duration = design.duration();
         let periods = design.n_periods;
         let record_length = design.record_length();
+        let (view_start, view_end) = self.time_window(duration);
+        let view_span = (view_end - view_start).max(1e-9);
 
         let channels: Vec<(String, f64, usize)> = design
             .channels
@@ -750,7 +817,7 @@ impl App {
                 Pos2::new(rect.right() - right, y1),
             );
             let limit = peak_limit * 1.3;
-            let axes = Axes::new(painter, plot, (0.0, duration), (-limit, limit));
+            let axes = Axes::new(painter, plot, (view_start, view_end), (-limit, limit));
             // No y tick labels: they would collide with the channel gutter, and the
             // peak limit annotated on its own line says more than -1/0/1 would.
             axes.frame(index == n - 1, false, 6, 2, true, index == n - 1, true);
@@ -772,19 +839,26 @@ impl App {
             let signal = self.trace(index, *peak_limit, periods);
             if signal.len() > 1 {
                 let columns = plot.width().max(60.0) as usize;
-                // cycles, not samples, decide whether a polyline can still be read
-                let cycles = k_visible * periods;
                 let scale = duration / (signal.len() - 1) as f64;
-                match decimate(&signal, columns, (cycles as f64) * 2.5 > columns as f64) {
+                // draw only the visible window, so zooming actually buys resolution
+                let i0 = (view_start / scale).floor().max(0.0) as usize;
+                let i1 = (((view_end / scale).ceil() as usize) + 1).min(signal.len());
+                let i0 = i0.min(i1.saturating_sub(1));
+                let slice = &signal[i0..i1];
+                // cycles across the *visible* span decide whether a polyline reads
+                let cycles = *k_visible as f64 * view_span / record_length;
+                match decimate(slice, columns, cycles * 2.5 > columns as f64) {
                     Trace::Line(points) => {
-                        let mapped: Vec<(f64, f64)> =
-                            points.iter().map(|(x, y)| (x * scale, *y)).collect();
+                        let mapped: Vec<(f64, f64)> = points
+                            .iter()
+                            .map(|(x, y)| ((i0 as f64 + x) * scale, *y))
+                            .collect();
                         axes.polyline(&mapped, colour, TRACE_WIDTH);
                     }
                     Trace::Band(points) => {
                         let mapped: Vec<(f64, f64, f64)> = points
                             .iter()
-                            .map(|(x, lo, hi)| (x * scale, *lo, *hi))
+                            .map(|(x, lo, hi)| ((i0 as f64 + x) * scale, *lo, *hi))
                             .collect();
                         axes.band(&mapped, colour);
                     }
@@ -817,11 +891,19 @@ impl App {
             );
         }
 
+        let footer = if self.time_view.is_some() {
+            format!(
+                "time (s) \u{2014} {:.3}\u{2013}{:.3} s of {:.3} s \u{00b7} scroll to zoom, drag to pan, double-click to fit",
+                view_start, view_end, duration
+            )
+        } else {
+            "time (s) \u{2014} scroll to zoom, drag to pan".to_string()
+        };
         plots::label(
             painter,
             Pos2::new(rect.center().x, rect.bottom() - 12.0),
             Align2::CENTER_CENTER,
-            "time (s)",
+            &footer,
             SIZE_SMALL,
             MUTED,
         );
@@ -1208,8 +1290,8 @@ mod tests {
         only_input(
             &mut app,
             Generator {
-                f_min: 4.0,
-                f_max: 12.0,
+                f_min: 10.0,
+                f_max: 30.0,
                 count: 8,
                 ..Default::default()
             },
@@ -1218,10 +1300,65 @@ mod tests {
         let d = app.design.as_ref().unwrap();
         let k_visible = d.channels[0].bandwidth_bin(0.9);
         let columns = 900usize;
-        let force = (k_visible * d.n_periods) as f64 * 2.5 > columns as f64;
-        assert!(force, "12 Hz over 60 s cannot be drawn as a polyline");
+        let cycles = k_visible as f64 * d.duration() / d.record_length();
+        assert!(
+            cycles * 2.5 > columns as f64,
+            "should be too dense: {cycles}"
+        );
         let signal = app.trace(0, 1.0, d.n_periods);
-        assert!(matches!(decimate(&signal, columns, force), Trace::Band(_)));
+        assert!(matches!(decimate(&signal, columns, true), Trace::Band(_)));
+    }
+
+    #[test]
+    fn zooming_narrows_the_window_and_double_click_resets() {
+        let mut app = App::default();
+        run(&mut app, 2);
+        let duration = app.design.as_ref().unwrap().duration();
+        assert_eq!(app.time_window(duration), (0.0, duration));
+
+        // zoomed to a tenth, centred
+        app.time_view = Some((duration * 0.45, duration * 0.1));
+        let (a, b) = app.time_window(duration);
+        assert!((b - a - duration * 0.1).abs() < 1e-9);
+
+        // clamped back inside the record
+        app.time_view = Some((duration * 2.0, duration * 0.1));
+        let (a, b) = app.time_window(duration);
+        assert!(a >= 0.0 && b <= duration + 1e-9, "{a}..{b}");
+
+        // a span larger than the record collapses to the record
+        app.time_view = Some((-5.0, duration * 10.0));
+        assert_eq!(app.time_window(duration), (0.0, duration));
+
+        app.time_view = None;
+        assert_eq!(app.time_window(duration), (0.0, duration));
+    }
+
+    #[test]
+    fn defaults_are_readable_at_a_normal_plot_width() {
+        // a first view should not be a picket fence: keep visible cycles well under
+        // the pixel budget so the waveform shape is legible without zooming
+        let app = {
+            let mut a = App::default();
+            run(&mut a, 2);
+            a
+        };
+        let d = app.design.as_ref().unwrap();
+        let columns = 900.0;
+        for ch in &d.channels {
+            let cycles = ch.bandwidth_bin(0.9) as f64 * d.duration() / d.record_length();
+            assert!(
+                cycles * 2.5 < columns,
+                "{} shows {cycles} cycles by default",
+                ch.name
+            );
+            assert!(
+                columns / cycles > 15.0,
+                "{} only {:.1} px/cycle",
+                ch.name,
+                columns / cycles
+            );
+        }
     }
 
     #[test]
@@ -1240,6 +1377,112 @@ mod tests {
             let force = (k_max * design.n_periods) as f64 * 2.5 > columns as f64;
             assert!(!force, "fs={fs} wrongly forced the envelope");
             assert!(matches!(decimate(&signal, columns, force), Trace::Line(_)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod render_dump {
+    use super::*;
+    use persistex_core::design::{generate_tones, Generator, Shape, Spacing};
+    use std::collections::HashSet;
+    use std::io::Write;
+
+    /// Tessellates the real UI and writes the triangles out, so the rendering can be
+    /// inspected outside a window. Run with:
+    ///   cargo test -p persistex --release dump_ui -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dump_ui() {
+        let cases: Vec<(&str, Generator, usize)> = vec![
+            (
+                "log_20",
+                Generator {
+                    f_min: 0.05,
+                    f_max: 8.0,
+                    count: 20,
+                    spacing: Spacing::Logarithmic,
+                    ..Default::default()
+                },
+                1,
+            ),
+            (
+                "log_6_invf",
+                Generator {
+                    f_min: 0.5,
+                    f_max: 8.0,
+                    count: 6,
+                    spacing: Spacing::Logarithmic,
+                    shape: Shape::InvF,
+                    ..Default::default()
+                },
+                1,
+            ),
+            ("default", Generator::default(), 0),
+        ];
+
+        for (label, g, tab) in cases {
+            let mut app = App::default();
+            if label != "default" {
+                let f0 = 1.0 / 30.0;
+                let tones = generate_tones(&g, f0, &HashSet::new());
+                app.rows.truncate(1);
+                app.rows[0].tones = tones.iter().map(ToneRow::from_tone).collect();
+                app.mark_dirty();
+            }
+            app.tab = tab;
+
+            let ctx = egui::Context::default();
+            ctx.set_visuals(egui::Visuals::light());
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(1340.0, 880.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw.clone(), |c| app.ui(c));
+            let out = ctx.run(raw, |c| app.ui(c));
+
+            let prims = ctx.tessellate(out.shapes, 1.0);
+            let path = format!("/tmp/ui_{}.json", label);
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+            writeln!(f, "{{\"w\":1340,\"h\":880,\"tris\":[").unwrap();
+            let mut first = true;
+            for p in &prims {
+                if let egui::epaint::Primitive::Mesh(mesh) = &p.primitive {
+                    for tri in mesh.indices.chunks(3) {
+                        if tri.len() < 3 {
+                            continue;
+                        }
+                        let v: Vec<&egui::epaint::Vertex> =
+                            tri.iter().map(|i| &mesh.vertices[*i as usize]).collect();
+                        let textured = v[0].uv != v[1].uv || v[1].uv != v[2].uv;
+                        if !first {
+                            writeln!(f, ",").unwrap();
+                        }
+                        first = false;
+                        write!(
+                            f,
+                            "[{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{},{},{},{},{}]",
+                            v[0].pos.x,
+                            v[0].pos.y,
+                            v[1].pos.x,
+                            v[1].pos.y,
+                            v[2].pos.x,
+                            v[2].pos.y,
+                            v[0].color.r(),
+                            v[0].color.g(),
+                            v[0].color.b(),
+                            v[0].color.a(),
+                            if textured { 1 } else { 0 }
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            writeln!(f, "\n]}}").unwrap();
+            println!("wrote {}", path);
         }
     }
 }

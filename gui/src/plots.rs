@@ -3,9 +3,12 @@
 use crate::theme::*;
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 
-/// Points kept per pixel column when thinning a polyline. Well above 1, so the curve
-/// stays smooth; the cycle test guarantees this leaves >=10 samples per cycle.
-const POINT_BUDGET: usize = 4;
+/// Points kept per pixel column when thinning a polyline.
+///
+/// Above 1 so the curve stays smooth, but not far above: sub-pixel segments are
+/// near-degenerate and egui's tessellator turns them into visible beading along the
+/// stroke. The cycle test upstream already guarantees several samples per cycle.
+const POINT_BUDGET: usize = 2;
 
 pub enum Trace {
     /// (sample index, value)
